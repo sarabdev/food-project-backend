@@ -1,0 +1,9 @@
+node_modules/
+.pnpm-store/
+dist/
+.env
+*.log
+.DS_Store
+.doc_review/
+uploads/*
+!uploads/.gitkeep
