@@ -4,8 +4,10 @@ import { pool } from "../database/pool.js";
 import { authenticate, requirePermission } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
+const partyTypes = ["client", "customs_consignee", "clearing_agent"];
+
 const partySchema = z.object({
-  party_type: z.enum(["client", "customs_consignee", "clearing_agent", "transporter"]),
+  party_type: z.enum(partyTypes),
   name: z.string().trim().min(2),
   contact_person: z.string().trim().optional().nullable(),
   business_id: z.string().trim().optional().nullable(),
@@ -27,8 +29,9 @@ partiesRouter.get(
   requirePermission("parties.view"),
   asyncHandler(async (req, res) => {
     const values = [];
-    let where = "WHERE is_active = TRUE";
+    let where = "WHERE is_active = TRUE AND party_type IN ('client', 'customs_consignee', 'clearing_agent')";
     if (req.query.type) {
+      if (!partyTypes.includes(req.query.type)) return res.json({ parties: [] });
       where += " AND party_type = ?";
       values.push(req.query.type);
     }
@@ -80,4 +83,3 @@ partiesRouter.delete(
     res.status(204).end();
   })
 );
-

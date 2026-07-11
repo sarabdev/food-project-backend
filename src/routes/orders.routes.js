@@ -38,14 +38,6 @@ const orderSchema = z.object({
   final_destination: z.string().trim().optional().nullable(),
   shipping_type: z.string().trim().optional().nullable(),
   shipped_per: z.string().trim().optional().nullable(),
-  truck_number: z.string().trim().optional().nullable(),
-  driver_name: z.string().trim().optional().nullable(),
-  driver_phone: z.string().trim().optional().nullable(),
-  clearing_agent_id: optionalId,
-  transporter_id: optionalId,
-  loading_address: z.string().trim().optional().nullable(),
-  delivery_address: z.string().trim().optional().nullable(),
-  seal_numbers: z.union([z.array(z.string().trim()), z.string().trim()]).optional().nullable(),
   container_number: z.string().trim().optional().nullable(),
   container_type: z.string().trim().optional().nullable(),
   cbm: z.coerce.number().min(0).default(0),
@@ -55,22 +47,36 @@ const orderSchema = z.object({
   items: z.array(itemSchema).min(1)
 });
 
+const gatePassSchema = z.object({
+  clearing_agent_id: optionalId,
+  transporter_name: z.string().trim().optional().nullable(),
+  transporter_contact: z.string().trim().optional().nullable(),
+  transporter_phone: z.string().trim().optional().nullable(),
+  truck_number: z.string().trim().optional().nullable(),
+  driver_name: z.string().trim().optional().nullable(),
+  driver_phone: z.string().trim().optional().nullable(),
+  loading_address: z.string().trim().optional().nullable(),
+  delivery_address: z.string().trim().optional().nullable(),
+  seal_numbers: z.union([z.array(z.string().trim()), z.string().trim()]).optional().nullable()
+});
+
 const orderColumns = [
   "client_id", "customs_consignee_id", "contract_date", "valid_until",
   "sales_contract_number", "payment_term", "advance_percentage", "freight_amount",
   "currency", "port_of_loading", "port_of_destination", "final_destination",
-  "shipping_type", "shipped_per", "truck_number", "driver_name", "driver_phone",
-  "clearing_agent_id", "transporter_id", "loading_address", "delivery_address",
-  "seal_numbers", "container_number", "container_type", "cbm",
+  "shipping_type", "shipped_per", "container_number", "container_type", "cbm",
   "freight_term", "customer_instructions", "notes"
 ];
 
 function orderValue(input, column) {
-  if (column !== "seal_numbers") return input[column] ?? null;
-  if (!input.seal_numbers) return null;
-  const seals = Array.isArray(input.seal_numbers)
-    ? input.seal_numbers
-    : input.seal_numbers.split(/\r?\n|,/);
+  return input[column] ?? null;
+}
+
+function sealValue(value) {
+  if (!value) return null;
+  const seals = Array.isArray(value)
+    ? value
+    : value.split(/\r?\n|,/);
   return JSON.stringify(seals.map((seal) => seal.trim()).filter(Boolean));
 }
 
@@ -134,14 +140,11 @@ ordersRouter.get(
         cc.name AS customs_consignee_name, cc.address_line_1 AS customs_consignee_address,
         cc.city AS customs_consignee_city, cc.country AS customs_consignee_country,
         ca.name AS clearing_agent_name, ca.phone AS clearing_agent_phone,
-        ca.contact_person AS clearing_agent_contact,
-        t.name AS transporter_name, t.phone AS transporter_phone,
-        t.contact_person AS transporter_contact
+        ca.contact_person AS clearing_agent_contact
        FROM export_orders o
        JOIN parties c ON c.id = o.client_id
        JOIN parties cc ON cc.id = o.customs_consignee_id
        LEFT JOIN parties ca ON ca.id = o.clearing_agent_id
-       LEFT JOIN parties t ON t.id = o.transporter_id
        WHERE o.id = ?`,
       [req.params.id]
     );
@@ -238,6 +241,36 @@ ordersRouter.put(
     } finally {
       connection.release();
     }
+  })
+);
+
+ordersRouter.patch(
+  "/:id/gate-pass",
+  requirePermission("orders.edit"),
+  asyncHandler(async (req, res) => {
+    const input = gatePassSchema.parse(req.body);
+    const [result] = await pool.execute(
+      `UPDATE export_orders SET
+        clearing_agent_id=?, transporter_name=?, transporter_contact=?,
+        transporter_phone=?, truck_number=?, driver_name=?, driver_phone=?,
+        loading_address=?, delivery_address=?, seal_numbers=?
+       WHERE id=?`,
+      [
+        input.clearing_agent_id,
+        input.transporter_name || null,
+        input.transporter_contact || null,
+        input.transporter_phone || null,
+        input.truck_number || null,
+        input.driver_name || null,
+        input.driver_phone || null,
+        input.loading_address || null,
+        input.delivery_address || null,
+        sealValue(input.seal_numbers),
+        req.params.id
+      ]
+    );
+    if (!result.affectedRows) return res.status(404).json({ message: "Order not found." });
+    res.json({ message: "Gate pass information updated." });
   })
 );
 

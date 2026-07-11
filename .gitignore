@@ -7,3 +7,4 @@ dist/
 .doc_review/
 uploads/*
 !uploads/.gitkeep
+/uploads

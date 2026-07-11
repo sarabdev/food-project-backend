@@ -1,5 +1,7 @@
 import express from "express";
 import cors from "cors";
+import path from "path";
+import { fileURLToPath } from "url";
 import { env } from "./config/env.js";
 import { pool } from "./database/pool.js";
 import { authRouter } from "./routes/auth.routes.js";
@@ -12,9 +14,12 @@ import { ordersRouter } from "./routes/orders.routes.js";
 import { errorHandler, notFound } from "./middleware/error.js";
 
 const app = express();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 app.use(cors({ origin: env.clientUrl }));
 app.use(express.json({ limit: "2mb" }));
+app.use("/api/uploads", express.static(path.resolve(__dirname, "../uploads")));
+app.use("/uploads", express.static(path.resolve(__dirname, "../uploads")));
 
 app.get("/api/health", async (req, res) => {
   await pool.query("SELECT 1");
@@ -35,4 +40,3 @@ app.use(errorHandler);
 app.listen(env.port, () => {
   console.log(`ZA Food API listening on http://localhost:${env.port}`);
 });
-

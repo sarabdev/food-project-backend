@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS parties (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  party_type ENUM('client', 'customs_consignee', 'clearing_agent', 'transporter') NOT NULL,
+  party_type ENUM('client', 'customs_consignee', 'clearing_agent') NOT NULL,
   name VARCHAR(180) NOT NULL,
   contact_person VARCHAR(120) NULL,
   business_id VARCHAR(100) NULL,
@@ -124,7 +124,9 @@ CREATE TABLE IF NOT EXISTS export_orders (
   driver_name VARCHAR(120) NULL,
   driver_phone VARCHAR(60) NULL,
   clearing_agent_id BIGINT UNSIGNED NULL,
-  transporter_id BIGINT UNSIGNED NULL,
+  transporter_name VARCHAR(180) NULL,
+  transporter_contact VARCHAR(120) NULL,
+  transporter_phone VARCHAR(60) NULL,
   loading_address VARCHAR(255) NULL,
   delivery_address VARCHAR(255) NULL,
   seal_numbers JSON NULL,
@@ -138,7 +140,6 @@ CREATE TABLE IF NOT EXISTS export_orders (
   CONSTRAINT fk_order_customs_consignee FOREIGN KEY (customs_consignee_id) REFERENCES parties(id),
   CONSTRAINT fk_order_user FOREIGN KEY (created_by) REFERENCES users(id),
   CONSTRAINT fk_order_clearing_agent FOREIGN KEY (clearing_agent_id) REFERENCES parties(id),
-  CONSTRAINT fk_order_transporter FOREIGN KEY (transporter_id) REFERENCES parties(id),
   UNIQUE KEY uq_order_sequence (sequence_year, sequence_number),
   INDEX idx_orders_status (status),
   INDEX idx_orders_created_at (created_at)
@@ -186,4 +187,3 @@ CREATE TABLE IF NOT EXISTS document_audit_logs (
   CONSTRAINT fk_audit_order FOREIGN KEY (export_order_id) REFERENCES export_orders(id) ON DELETE CASCADE,
   CONSTRAINT fk_audit_user FOREIGN KEY (user_id) REFERENCES users(id)
 );
-

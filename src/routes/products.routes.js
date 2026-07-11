@@ -1,8 +1,38 @@
 import { Router } from "express";
+import fs from "fs";
+import multer from "multer";
+import path from "path";
+import { fileURLToPath } from "url";
 import { z } from "zod";
 import { pool } from "../database/pool.js";
 import { authenticate, requirePermission } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const productImageDir = path.resolve(__dirname, "../../uploads/products");
+fs.mkdirSync(productImageDir, { recursive: true });
+
+const imageUpload = multer({
+  storage: multer.diskStorage({
+    destination: productImageDir,
+    filename: (req, file, callback) => {
+      const extension = path.extname(file.originalname).toLowerCase();
+      const basename = path
+        .basename(file.originalname, extension)
+        .replace(/[^a-z0-9]+/gi, "-")
+        .replace(/^-+|-+$/g, "")
+        .toLowerCase() || "product";
+      callback(null, `${Date.now()}-${basename}${extension}`);
+    }
+  }),
+  fileFilter: (req, file, callback) => {
+    if (file.mimetype.startsWith("image/")) return callback(null, true);
+    const error = new Error("Only image files can be uploaded.");
+    error.status = 400;
+    callback(error);
+  },
+  limits: { fileSize: 5 * 1024 * 1024 }
+});
 
 const productSchema = z.object({
   sku: z.string().trim().optional().nullable(),
@@ -37,8 +67,12 @@ productsRouter.get(
 productsRouter.post(
   "/",
   requirePermission("products.create"),
+  imageUpload.single("image"),
   asyncHandler(async (req, res) => {
-    const input = productSchema.parse(req.body);
+    const input = productSchema.parse({
+      ...req.body,
+      image_url: req.file ? `/api/uploads/products/${req.file.filename}` : req.body.image_url
+    });
     const [result] = await pool.execute(
       `INSERT INTO products (
         sku, name, description, hs_code, package_type, units_per_carton,
@@ -55,8 +89,12 @@ productsRouter.post(
 productsRouter.put(
   "/:id",
   requirePermission("products.edit"),
+  imageUpload.single("image"),
   asyncHandler(async (req, res) => {
-    const input = productSchema.parse(req.body);
+    const input = productSchema.parse({
+      ...req.body,
+      image_url: req.file ? `/api/uploads/products/${req.file.filename}` : req.body.image_url
+    });
     await pool.execute(
       `UPDATE products SET
         sku=?, name=?, description=?, hs_code=?, package_type=?, units_per_carton=?,
@@ -78,4 +116,3 @@ productsRouter.delete(
     res.status(204).end();
   })
 );
-
