@@ -50,6 +50,7 @@ async function initialize() {
   await ensureColumn(connection, "export_orders", "transporter_name", "VARCHAR(180) NULL AFTER clearing_agent_id");
   await ensureColumn(connection, "export_orders", "transporter_contact", "VARCHAR(120) NULL AFTER transporter_name");
   await ensureColumn(connection, "export_orders", "transporter_phone", "VARCHAR(60) NULL AFTER transporter_contact");
+  await ensureColumn(connection, "products", "packaging_details", "JSON NULL AFTER pieces_per_unit");
 
   for (const [key, moduleName, actionName] of permissions) {
     await connection.execute(

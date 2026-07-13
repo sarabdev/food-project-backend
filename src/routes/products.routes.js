@@ -34,14 +34,23 @@ const imageUpload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }
 });
 
+const packageTypes = ["Carton", "Jar", "Pouch", "Box"];
+const packagingDetailsSchema = z.object({
+  pieces_per_box: z.coerce.number().min(0).default(0),
+  boxes_per_pouch: z.coerce.number().min(0).default(0),
+  pouches_per_jar: z.coerce.number().min(0).default(0),
+  jars_per_carton: z.coerce.number().min(0).default(0)
+});
+
 const productSchema = z.object({
   sku: z.string().trim().optional().nullable(),
   name: z.string().trim().min(2),
   description: z.string().trim().optional().nullable(),
   hs_code: z.string().trim().optional().nullable(),
-  package_type: z.string().trim().default("Carton"),
+  package_type: z.enum(packageTypes).default("Carton"),
   units_per_carton: z.coerce.number().min(0).default(0),
   pieces_per_unit: z.coerce.number().min(0).default(0),
+  packaging_details: packagingDetailsSchema.default({}),
   unit_weight_grams: z.coerce.number().min(0).default(0),
   net_weight_per_carton: z.coerce.number().min(0),
   gross_weight_per_carton: z.coerce.number().min(0),
@@ -49,6 +58,41 @@ const productSchema = z.object({
   default_customs_price_per_kg: z.coerce.number().min(0).default(0),
   image_url: z.string().trim().optional().nullable()
 });
+
+function parseBody(body, file) {
+  let packagingDetails = body.packaging_details;
+  if (typeof packagingDetails === "string") {
+    try {
+      packagingDetails = JSON.parse(packagingDetails || "{}");
+    } catch {
+      packagingDetails = {};
+    }
+  }
+  return productSchema.parse({
+    ...body,
+    packaging_details: packagingDetails,
+    image_url: file ? `/api/uploads/products/${file.filename}` : body.image_url
+  });
+}
+
+function productValues(input) {
+  return [
+    input.sku,
+    input.name,
+    input.description,
+    input.hs_code,
+    input.package_type,
+    input.units_per_carton,
+    input.pieces_per_unit,
+    JSON.stringify(input.packaging_details),
+    input.unit_weight_grams,
+    input.net_weight_per_carton,
+    input.gross_weight_per_carton,
+    input.default_client_price,
+    input.default_customs_price_per_kg,
+    input.image_url
+  ];
+}
 
 export const productsRouter = Router();
 productsRouter.use(authenticate);
@@ -69,18 +113,15 @@ productsRouter.post(
   requirePermission("products.create"),
   imageUpload.single("image"),
   asyncHandler(async (req, res) => {
-    const input = productSchema.parse({
-      ...req.body,
-      image_url: req.file ? `/api/uploads/products/${req.file.filename}` : req.body.image_url
-    });
+    const input = parseBody(req.body, req.file);
     const [result] = await pool.execute(
       `INSERT INTO products (
         sku, name, description, hs_code, package_type, units_per_carton,
-        pieces_per_unit, unit_weight_grams, net_weight_per_carton,
+        pieces_per_unit, packaging_details, unit_weight_grams, net_weight_per_carton,
         gross_weight_per_carton, default_client_price,
         default_customs_price_per_kg, image_url
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      Object.values(input)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      productValues(input)
     );
     res.status(201).json({ id: result.insertId });
   })
@@ -91,18 +132,15 @@ productsRouter.put(
   requirePermission("products.edit"),
   imageUpload.single("image"),
   asyncHandler(async (req, res) => {
-    const input = productSchema.parse({
-      ...req.body,
-      image_url: req.file ? `/api/uploads/products/${req.file.filename}` : req.body.image_url
-    });
+    const input = parseBody(req.body, req.file);
     await pool.execute(
       `UPDATE products SET
         sku=?, name=?, description=?, hs_code=?, package_type=?, units_per_carton=?,
-        pieces_per_unit=?, unit_weight_grams=?, net_weight_per_carton=?,
+        pieces_per_unit=?, packaging_details=?, unit_weight_grams=?, net_weight_per_carton=?,
         gross_weight_per_carton=?, default_client_price=?,
         default_customs_price_per_kg=?, image_url=?
        WHERE id=?`,
-      [...Object.values(input), req.params.id]
+      [...productValues(input), req.params.id]
     );
     res.json({ message: "Product updated." });
   })

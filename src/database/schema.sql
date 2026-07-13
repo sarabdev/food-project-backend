@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS products (
   package_type VARCHAR(40) NOT NULL DEFAULT 'Carton',
   units_per_carton DECIMAL(12,3) NOT NULL DEFAULT 0,
   pieces_per_unit DECIMAL(12,3) NOT NULL DEFAULT 0,
+  packaging_details JSON NULL,
   unit_weight_grams DECIMAL(12,3) NOT NULL DEFAULT 0,
   net_weight_per_carton DECIMAL(12,3) NOT NULL DEFAULT 0,
   gross_weight_per_carton DECIMAL(12,3) NOT NULL DEFAULT 0,

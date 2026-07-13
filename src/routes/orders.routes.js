@@ -154,6 +154,7 @@ ordersRouter.get(
         p.unit_weight_grams AS product_unit_weight_grams,
         p.pieces_per_unit AS product_pieces_per_unit,
         p.package_type AS product_package_type,
+        p.packaging_details AS product_packaging_details,
         p.image_url AS product_image_url
        FROM export_order_items i
        JOIN products p ON p.id = i.product_id
@@ -288,6 +289,23 @@ ordersRouter.patch(
       [status, status, req.params.id]
     );
     res.json({ message: "Order status updated." });
+  })
+);
+
+ordersRouter.delete(
+  "/:id",
+  requirePermission("orders.delete"),
+  asyncHandler(async (req, res) => {
+    const [[order]] = await pool.execute(
+      "SELECT status FROM export_orders WHERE id = ?",
+      [req.params.id]
+    );
+    if (!order) return res.status(404).json({ message: "Order not found." });
+    if (["shipped", "completed"].includes(order.status)) {
+      return res.status(409).json({ message: "Shipped or completed orders cannot be deleted." });
+    }
+    await pool.execute("DELETE FROM export_orders WHERE id = ?", [req.params.id]);
+    res.status(204).end();
   })
 );
 
