@@ -53,7 +53,11 @@ async function initialize() {
   await ensureColumn(connection, "export_orders", "transporter_name", "VARCHAR(180) NULL AFTER clearing_agent_id");
   await ensureColumn(connection, "export_orders", "transporter_contact", "VARCHAR(120) NULL AFTER transporter_name");
   await ensureColumn(connection, "export_orders", "transporter_phone", "VARCHAR(60) NULL AFTER transporter_contact");
+  await ensureColumn(connection, "export_orders", "stock_deducted", "BOOLEAN NOT NULL DEFAULT FALSE AFTER notes");
   await ensureColumn(connection, "products", "packaging_details", "JSON NULL AFTER pieces_per_unit");
+  await ensureColumn(connection, "products", "stock_in_hand", "DECIMAL(14,3) NOT NULL DEFAULT 0 AFTER packaging_details");
+  await ensureColumn(connection, "products", "low_stock_alert", "DECIMAL(14,3) NOT NULL DEFAULT 0 AFTER stock_in_hand");
+  await migrateLegacyCartonPacking(connection);
 
   for (const [key, moduleName, actionName] of permissions) {
     await connection.execute(
@@ -170,5 +174,32 @@ async function ensureColumn(connection, tableName, columnName, definition) {
   );
   if (!columns.length) {
     await connection.query(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  }
+}
+
+async function migrateLegacyCartonPacking(connection) {
+  const [products] = await connection.query(
+    `SELECT id, units_per_carton, pieces_per_unit, packaging_details
+     FROM products
+     WHERE package_type = 'Carton'`
+  );
+  for (const product of products) {
+    const details = typeof product.packaging_details === "string"
+      ? JSON.parse(product.packaging_details || "{}")
+      : product.packaging_details || {};
+    const piecesPerPack = Number(details.pieces_per_pack ?? details.pieces_per_box ?? product.units_per_carton ?? 0);
+    const packsPerCarton = Number(details.packs_per_carton ?? details.jars_per_carton ?? product.pieces_per_unit ?? 0);
+    await connection.execute(
+      `UPDATE products
+       SET package_type = 'Jar', pieces_per_unit = ?, units_per_carton = ?,
+         packaging_details = ?
+       WHERE id = ?`,
+      [
+        piecesPerPack,
+        packsPerCarton,
+        JSON.stringify({ pieces_per_pack: piecesPerPack, packs_per_carton: packsPerCarton }),
+        product.id
+      ]
+    );
   }
 }

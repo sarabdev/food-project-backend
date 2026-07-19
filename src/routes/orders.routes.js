@@ -105,6 +105,93 @@ async function replaceItems(connection, orderId, items) {
   }
 }
 
+function demandByProduct(items) {
+  const demand = new Map();
+  for (const item of items) {
+    const productId = Number(item.product_id);
+    const stockUnits = Number(item.quantity || 0) * Number(item.units_per_carton || 0);
+    demand.set(productId, (demand.get(productId) || 0) + stockUnits);
+  }
+  return demand;
+}
+
+async function reserveStock(connection, items, previousItems = []) {
+  const productIds = [...new Set([
+    ...items.map((item) => Number(item.product_id)),
+    ...previousItems.map((item) => Number(item.product_id))
+  ])].sort((left, right) => left - right);
+  if (!productIds.length) return items;
+
+  const placeholders = productIds.map(() => "?").join(", ");
+  const [products] = await connection.execute(
+    `SELECT id, name, package_type, units_per_carton, stock_in_hand, is_active
+     FROM products
+     WHERE id IN (${placeholders})
+     ORDER BY id
+     FOR UPDATE`,
+    productIds
+  );
+  const productsById = new Map(products.map((product) => [Number(product.id), product]));
+  if (products.length !== productIds.length) {
+    const error = new Error("One or more selected products are unavailable.");
+    error.status = 409;
+    throw error;
+  }
+
+  const normalizedItems = items.map((item) => {
+    const product = productsById.get(Number(item.product_id));
+    if (!product.is_active) {
+      const error = new Error(`${product.name} is inactive and cannot be added to an order.`);
+      error.status = 409;
+      throw error;
+    }
+    const packsPerCarton = Number(product.units_per_carton || 0);
+    if (!packsPerCarton) {
+      const error = new Error(`Set packs per carton for ${product.name} before creating an order.`);
+      error.status = 409;
+      throw error;
+    }
+    return { ...item, units_per_carton: packsPerCarton };
+  });
+  const newDemand = demandByProduct(normalizedItems);
+  const oldDemand = demandByProduct(previousItems);
+
+  for (const productId of productIds) {
+    const product = productsById.get(productId);
+    const difference = (newDemand.get(productId) || 0) - (oldDemand.get(productId) || 0);
+    if (difference > Number(product.stock_in_hand) + 0.0001) {
+      const packLabel = String(product.package_type || "pack").toLowerCase();
+      const error = new Error(
+        `Insufficient stock for ${product.name}. Available: ${Number(product.stock_in_hand).toLocaleString()} ${packLabel}s; required: ${difference.toLocaleString()} ${packLabel}s.`
+      );
+      error.status = 409;
+      throw error;
+    }
+    if (difference) {
+      await connection.execute(
+        "UPDATE products SET stock_in_hand = stock_in_hand - ? WHERE id = ?",
+        [difference, productId]
+      );
+    }
+  }
+  return normalizedItems;
+}
+
+async function orderItemsForStock(connection, orderId) {
+  const [items] = await connection.execute(
+    `SELECT product_id, quantity, units_per_carton
+     FROM export_order_items
+     WHERE export_order_id = ?`,
+    [orderId]
+  );
+  return items;
+}
+
+async function restoreOrderStock(connection, orderId) {
+  const items = await orderItemsForStock(connection, orderId);
+  await reserveStock(connection, [], items);
+}
+
 export const ordersRouter = Router();
 ordersRouter.use(authenticate);
 
@@ -194,7 +281,12 @@ ordersRouter.post(
         ) VALUES (${new Array(orderColumns.length + 4).fill("?").join(", ")})`,
         [number.invoiceNumber, number.sequence, number.year, req.user.id, ...values]
       );
-      await replaceItems(connection, result.insertId, input.items);
+      const reservedItems = await reserveStock(connection, input.items);
+      await replaceItems(connection, result.insertId, reservedItems);
+      await connection.execute(
+        "UPDATE export_orders SET stock_deducted = TRUE WHERE id = ?",
+        [result.insertId]
+      );
       await connection.commit();
       res.status(201).json({ id: result.insertId, invoice_number: number.invoiceNumber });
     } catch (error) {
@@ -215,7 +307,7 @@ ordersRouter.put(
     try {
       await connection.beginTransaction();
       const [[existingOrder]] = await connection.execute(
-        "SELECT status, client_id FROM export_orders WHERE id = ? FOR UPDATE",
+        "SELECT status, client_id, stock_deducted FROM export_orders WHERE id = ? FOR UPDATE",
         [req.params.id]
       );
       if (!existingOrder) {
@@ -251,12 +343,17 @@ ordersRouter.put(
         error.status = 409;
         throw error;
       }
+      const previousItems = existingOrder.stock_deducted
+        ? await orderItemsForStock(connection, req.params.id)
+        : [];
+      const reservedItems = await reserveStock(connection, input.items, previousItems);
       await connection.execute(
         `UPDATE export_orders SET ${orderColumns.map((column) => `${column}=?`).join(", ")}
+          , stock_deducted=TRUE
          WHERE id=?`,
         [...orderColumns.map((column) => orderValue(input, column)), req.params.id]
       );
-      await replaceItems(connection, req.params.id, input.items);
+      await replaceItems(connection, req.params.id, reservedItems);
       await connection.commit();
       res.json({ message: "Order updated." });
     } catch (error) {
@@ -305,24 +402,51 @@ ordersRouter.patch(
     const { status } = z.object({
       status: z.enum(["draft", "confirmed", "in_production", "ready_to_ship", "shipped", "completed", "cancelled"])
     }).parse(req.body);
-    if (status === "cancelled") {
-      const [[payments]] = await pool.execute(
-        "SELECT COUNT(*) AS payment_count FROM order_payments WHERE export_order_id = ?",
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [[order]] = await connection.execute(
+        "SELECT status, stock_deducted FROM export_orders WHERE id = ? FOR UPDATE",
         [req.params.id]
       );
-      if (payments.payment_count) {
-        return res.status(409).json({
-          message: "This order has recorded payments and cannot be cancelled."
-        });
+      if (!order) {
+        const error = new Error("Order not found.");
+        error.status = 404;
+        throw error;
       }
+      if (order.status === "cancelled" && status !== "cancelled") {
+        const error = new Error("A cancelled order cannot be reopened. Create a new order instead.");
+        error.status = 409;
+        throw error;
+      }
+      if (status === "cancelled" && order.status !== "cancelled") {
+        const [[payments]] = await connection.execute(
+          "SELECT COUNT(*) AS payment_count FROM order_payments WHERE export_order_id = ?",
+          [req.params.id]
+        );
+        if (payments.payment_count) {
+          const error = new Error("This order has recorded payments and cannot be cancelled.");
+          error.status = 409;
+          throw error;
+        }
+        if (order.stock_deducted) await restoreOrderStock(connection, req.params.id);
+      }
+      await connection.execute(
+        `UPDATE export_orders
+         SET status=?,
+           stock_deducted=IF(?='cancelled', FALSE, stock_deducted),
+           confirmed_at=IF(?='confirmed' AND confirmed_at IS NULL, NOW(), confirmed_at)
+         WHERE id=?`,
+        [status, status, status, req.params.id]
+      );
+      await connection.commit();
+      res.json({ message: "Order status updated." });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
     }
-    await pool.execute(
-      `UPDATE export_orders
-       SET status=?, confirmed_at=IF(?='confirmed' AND confirmed_at IS NULL, NOW(), confirmed_at)
-       WHERE id=?`,
-      [status, status, req.params.id]
-    );
-    res.json({ message: "Order status updated." });
   })
 );
 
@@ -330,25 +454,41 @@ ordersRouter.delete(
   "/:id",
   requirePermission("orders.delete"),
   asyncHandler(async (req, res) => {
-    const [[order]] = await pool.execute(
-      "SELECT status FROM export_orders WHERE id = ?",
-      [req.params.id]
-    );
-    if (!order) return res.status(404).json({ message: "Order not found." });
-    if (["shipped", "completed"].includes(order.status)) {
-      return res.status(409).json({ message: "Shipped or completed orders cannot be deleted." });
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [[order]] = await connection.execute(
+        "SELECT status, stock_deducted FROM export_orders WHERE id = ? FOR UPDATE",
+        [req.params.id]
+      );
+      if (!order) {
+        await connection.rollback();
+        return res.status(404).json({ message: "Order not found." });
+      }
+      if (["shipped", "completed"].includes(order.status)) {
+        await connection.rollback();
+        return res.status(409).json({ message: "Shipped or completed orders cannot be deleted." });
+      }
+      const [[payments]] = await connection.execute(
+        "SELECT COUNT(*) AS payment_count FROM order_payments WHERE export_order_id = ?",
+        [req.params.id]
+      );
+      if (payments.payment_count) {
+        await connection.rollback();
+        return res.status(409).json({
+          message: "This order has recorded payments and cannot be deleted."
+        });
+      }
+      if (order.stock_deducted) await restoreOrderStock(connection, req.params.id);
+      await connection.execute("DELETE FROM export_orders WHERE id = ?", [req.params.id]);
+      await connection.commit();
+      res.status(204).end();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
     }
-    const [[payments]] = await pool.execute(
-      "SELECT COUNT(*) AS payment_count FROM order_payments WHERE export_order_id = ?",
-      [req.params.id]
-    );
-    if (payments.payment_count) {
-      return res.status(409).json({
-        message: "This order has recorded payments and cannot be deleted."
-      });
-    }
-    await pool.execute("DELETE FROM export_orders WHERE id = ?", [req.params.id]);
-    res.status(204).end();
   })
 );
 

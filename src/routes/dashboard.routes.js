@@ -57,6 +57,9 @@ dashboardRouter.get(
     const [[masters]] = await pool.query(
       `SELECT
         (SELECT COUNT(*) FROM products WHERE is_active = TRUE) AS products,
+        (SELECT COUNT(*) FROM products
+         WHERE is_active = TRUE AND low_stock_alert > 0
+           AND stock_in_hand <= low_stock_alert) AS low_stock_products,
         (SELECT COUNT(*) FROM parties WHERE party_type = 'client' AND is_active = TRUE) AS clients,
         (SELECT COUNT(*) FROM users WHERE is_active = TRUE) AS users`
     );

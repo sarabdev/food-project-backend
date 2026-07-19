@@ -34,12 +34,10 @@ const imageUpload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }
 });
 
-const packageTypes = ["Carton", "Jar", "Pouch", "Box"];
+const packageTypes = ["Jar", "Pouch", "Box"];
 const packagingDetailsSchema = z.object({
-  pieces_per_box: z.coerce.number().min(0).default(0),
-  boxes_per_pouch: z.coerce.number().min(0).default(0),
-  pouches_per_jar: z.coerce.number().min(0).default(0),
-  jars_per_carton: z.coerce.number().min(0).default(0)
+  pieces_per_pack: z.coerce.number().min(0).default(0),
+  packs_per_carton: z.coerce.number().min(0).default(0)
 });
 
 const productSchema = z.object({
@@ -47,10 +45,12 @@ const productSchema = z.object({
   name: z.string().trim().min(2),
   description: z.string().trim().optional().nullable(),
   hs_code: z.string().trim().optional().nullable(),
-  package_type: z.enum(packageTypes).default("Carton"),
+  package_type: z.enum(packageTypes).default("Jar"),
   units_per_carton: z.coerce.number().min(0).default(0),
   pieces_per_unit: z.coerce.number().min(0).default(0),
   packaging_details: packagingDetailsSchema.default({}),
+  stock_in_hand: z.coerce.number().min(0).default(0),
+  low_stock_alert: z.coerce.number().min(0).default(0),
   unit_weight_grams: z.coerce.number().min(0).default(0),
   net_weight_per_carton: z.coerce.number().min(0),
   gross_weight_per_carton: z.coerce.number().min(0),
@@ -85,6 +85,8 @@ function productValues(input) {
     input.units_per_carton,
     input.pieces_per_unit,
     JSON.stringify(input.packaging_details),
+    input.stock_in_hand,
+    input.low_stock_alert,
     input.unit_weight_grams,
     input.net_weight_per_carton,
     input.gross_weight_per_carton,
@@ -117,10 +119,11 @@ productsRouter.post(
     const [result] = await pool.execute(
       `INSERT INTO products (
         sku, name, description, hs_code, package_type, units_per_carton,
-        pieces_per_unit, packaging_details, unit_weight_grams, net_weight_per_carton,
+        pieces_per_unit, packaging_details, stock_in_hand, low_stock_alert,
+        unit_weight_grams, net_weight_per_carton,
         gross_weight_per_carton, default_client_price,
         default_customs_price_per_kg, image_url
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       productValues(input)
     );
     res.status(201).json({ id: result.insertId });
@@ -136,7 +139,8 @@ productsRouter.put(
     await pool.execute(
       `UPDATE products SET
         sku=?, name=?, description=?, hs_code=?, package_type=?, units_per_carton=?,
-        pieces_per_unit=?, packaging_details=?, unit_weight_grams=?, net_weight_per_carton=?,
+        pieces_per_unit=?, packaging_details=?, stock_in_hand=?, low_stock_alert=?,
+        unit_weight_grams=?, net_weight_per_carton=?,
         gross_weight_per_carton=?, default_client_price=?,
         default_customs_price_per_kg=?, image_url=?
        WHERE id=?`,
