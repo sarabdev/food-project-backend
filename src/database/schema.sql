@@ -169,6 +169,21 @@ CREATE TABLE IF NOT EXISTS export_order_items (
   UNIQUE KEY uq_order_line (export_order_id, line_number)
 );
 
+CREATE TABLE IF NOT EXISTS order_payments (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  export_order_id BIGINT UNSIGNED NOT NULL,
+  amount DECIMAL(14,2) NOT NULL,
+  payment_date DATE NOT NULL,
+  reference_number VARCHAR(120) NULL,
+  notes VARCHAR(500) NULL,
+  created_by BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_order_payment_order FOREIGN KEY (export_order_id) REFERENCES export_orders(id),
+  CONSTRAINT fk_order_payment_user FOREIGN KEY (created_by) REFERENCES users(id),
+  INDEX idx_order_payments_order (export_order_id),
+  INDEX idx_order_payments_date (payment_date)
+);
+
 CREATE TABLE IF NOT EXISTS document_audit_logs (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   export_order_id BIGINT UNSIGNED NOT NULL,

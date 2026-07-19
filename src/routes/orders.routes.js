@@ -215,7 +215,7 @@ ordersRouter.put(
     try {
       await connection.beginTransaction();
       const [[existingOrder]] = await connection.execute(
-        "SELECT status FROM export_orders WHERE id = ? FOR UPDATE",
+        "SELECT status, client_id FROM export_orders WHERE id = ? FOR UPDATE",
         [req.params.id]
       );
       if (!existingOrder) {
@@ -225,6 +225,29 @@ ordersRouter.put(
       }
       if (["shipped", "completed", "cancelled"].includes(existingOrder.status)) {
         const error = new Error("Shipped, completed or cancelled orders cannot be edited.");
+        error.status = 409;
+        throw error;
+      }
+      const [[paymentInfo]] = await connection.execute(
+        `SELECT COUNT(*) AS payment_count, COALESCE(SUM(amount), 0) AS additional_received
+         FROM order_payments
+         WHERE export_order_id = ?`,
+        [req.params.id]
+      );
+      if (paymentInfo.payment_count && Number(input.client_id) !== Number(existingOrder.client_id)) {
+        const error = new Error("The client cannot be changed after payments have been recorded.");
+        error.status = 409;
+        throw error;
+      }
+      const revisedTotal = input.items.reduce(
+        (sum, item) => sum + (item.is_sample ? 0 : item.quantity * item.client_price_per_carton),
+        0
+      );
+      const revisedAdvance = Math.round(revisedTotal * input.advance_percentage) / 100;
+      if (revisedAdvance + paymentInfo.additional_received - revisedTotal > 0.004) {
+        const error = new Error(
+          "This change would make received payments exceed the order total. Keep a sufficient total or reduce the advance percentage."
+        );
         error.status = 409;
         throw error;
       }
@@ -282,6 +305,17 @@ ordersRouter.patch(
     const { status } = z.object({
       status: z.enum(["draft", "confirmed", "in_production", "ready_to_ship", "shipped", "completed", "cancelled"])
     }).parse(req.body);
+    if (status === "cancelled") {
+      const [[payments]] = await pool.execute(
+        "SELECT COUNT(*) AS payment_count FROM order_payments WHERE export_order_id = ?",
+        [req.params.id]
+      );
+      if (payments.payment_count) {
+        return res.status(409).json({
+          message: "This order has recorded payments and cannot be cancelled."
+        });
+      }
+    }
     await pool.execute(
       `UPDATE export_orders
        SET status=?, confirmed_at=IF(?='confirmed' AND confirmed_at IS NULL, NOW(), confirmed_at)
@@ -303,6 +337,15 @@ ordersRouter.delete(
     if (!order) return res.status(404).json({ message: "Order not found." });
     if (["shipped", "completed"].includes(order.status)) {
       return res.status(409).json({ message: "Shipped or completed orders cannot be deleted." });
+    }
+    const [[payments]] = await pool.execute(
+      "SELECT COUNT(*) AS payment_count FROM order_payments WHERE export_order_id = ?",
+      [req.params.id]
+    );
+    if (payments.payment_count) {
+      return res.status(409).json({
+        message: "This order has recorded payments and cannot be deleted."
+      });
     }
     await pool.execute("DELETE FROM export_orders WHERE id = ?", [req.params.id]);
     res.status(204).end();

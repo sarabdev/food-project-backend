@@ -24,6 +24,8 @@ const permissions = [
   ["parties.create", "parties", "create"],
   ["parties.edit", "parties", "edit"],
   ["parties.delete", "parties", "delete"],
+  ["ledger.view", "ledger", "view"],
+  ["ledger.record_payment", "ledger", "record_payment"],
   ["users.view", "users", "view"],
   ["users.create", "users", "create"],
   ["users.edit", "users", "edit"],
@@ -88,7 +90,8 @@ async function initialize() {
      SELECT ?, id FROM permissions
      WHERE permission_key IN (
        'dashboard.view','orders.view','orders.create','orders.edit',
-       'documents.preview','documents.print','products.view','parties.view'
+       'documents.preview','documents.print','products.view','parties.view',
+       'ledger.view','ledger.record_payment'
      )`,
     [docsRole.id]
   );
@@ -99,7 +102,8 @@ async function initialize() {
      SELECT ?, id FROM permissions
      WHERE permission_key IN (
        'dashboard.view','orders.view','orders.edit',
-       'documents.preview','documents.print','products.view','parties.view'
+       'documents.preview','documents.print','products.view','parties.view',
+       'ledger.view'
      )`,
     [shippingRole.id]
   );
@@ -109,7 +113,8 @@ async function initialize() {
     `INSERT IGNORE INTO role_permissions (role_id, permission_id)
      SELECT ?, id FROM permissions
      WHERE permission_key IN (
-       'dashboard.view','orders.view','documents.preview','products.view','parties.view'
+       'dashboard.view','orders.view','documents.preview','products.view','parties.view',
+       'ledger.view'
      )`,
     [viewerRole.id]
   );
