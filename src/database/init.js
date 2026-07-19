@@ -26,6 +26,7 @@ const permissions = [
   ["parties.delete", "parties", "delete"],
   ["ledger.view", "ledger", "view"],
   ["ledger.record_payment", "ledger", "record_payment"],
+  ["reports.view", "reports", "view"],
   ["users.view", "users", "view"],
   ["users.create", "users", "create"],
   ["users.edit", "users", "edit"],
@@ -91,7 +92,7 @@ async function initialize() {
      WHERE permission_key IN (
        'dashboard.view','orders.view','orders.create','orders.edit',
        'documents.preview','documents.print','products.view','parties.view',
-       'ledger.view','ledger.record_payment'
+       'ledger.view','ledger.record_payment','reports.view'
      )`,
     [docsRole.id]
   );
@@ -103,7 +104,7 @@ async function initialize() {
      WHERE permission_key IN (
        'dashboard.view','orders.view','orders.edit',
        'documents.preview','documents.print','products.view','parties.view',
-       'ledger.view'
+       'ledger.view','reports.view'
      )`,
     [shippingRole.id]
   );
@@ -114,7 +115,7 @@ async function initialize() {
      SELECT ?, id FROM permissions
      WHERE permission_key IN (
        'dashboard.view','orders.view','documents.preview','products.view','parties.view',
-       'ledger.view'
+       'ledger.view','reports.view'
      )`,
     [viewerRole.id]
   );
