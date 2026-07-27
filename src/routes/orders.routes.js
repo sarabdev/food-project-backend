@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../database/pool.js";
 import { authenticate, requirePermission } from "../middleware/auth.js";
+import { recordStockMovement } from "../services/stockMovements.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { reserveInvoiceNumber } from "../utils/orderNumber.js";
 
@@ -115,7 +116,7 @@ function demandByProduct(items) {
   return demand;
 }
 
-async function reserveStock(connection, items, previousItems = []) {
+async function reserveStock(connection, items, previousItems = [], movement = {}) {
   const productIds = [...new Set([
     ...items.map((item) => Number(item.product_id)),
     ...previousItems.map((item) => Number(item.product_id))
@@ -172,6 +173,18 @@ async function reserveStock(connection, items, previousItems = []) {
         "UPDATE products SET stock_in_hand = stock_in_hand - ? WHERE id = ?",
         [difference, productId]
       );
+      if (movement.movementType) {
+        await recordStockMovement(connection, {
+          productId,
+          movementDate: movement.movementDate || null,
+          movementType: movement.movementType,
+          quantityChange: -difference,
+          exportOrderId: movement.orderId || null,
+          referenceNumber: movement.referenceNumber || null,
+          notes: movement.notes || null,
+          createdBy: movement.createdBy
+        });
+      }
     }
   }
   return normalizedItems;
@@ -187,9 +200,9 @@ async function orderItemsForStock(connection, orderId) {
   return items;
 }
 
-async function restoreOrderStock(connection, orderId) {
+async function restoreOrderStock(connection, orderId, movement) {
   const items = await orderItemsForStock(connection, orderId);
-  await reserveStock(connection, [], items);
+  await reserveStock(connection, [], items, movement);
 }
 
 export const ordersRouter = Router();
@@ -281,7 +294,14 @@ ordersRouter.post(
         ) VALUES (${new Array(orderColumns.length + 4).fill("?").join(", ")})`,
         [number.invoiceNumber, number.sequence, number.year, req.user.id, ...values]
       );
-      const reservedItems = await reserveStock(connection, input.items);
+      const reservedItems = await reserveStock(connection, input.items, [], {
+        movementType: "order",
+        movementDate: input.contract_date,
+        orderId: result.insertId,
+        referenceNumber: number.invoiceNumber,
+        notes: "Stock issued for export order.",
+        createdBy: req.user.id
+      });
       await replaceItems(connection, result.insertId, reservedItems);
       await connection.execute(
         "UPDATE export_orders SET stock_deducted = TRUE WHERE id = ?",
@@ -307,7 +327,7 @@ ordersRouter.put(
     try {
       await connection.beginTransaction();
       const [[existingOrder]] = await connection.execute(
-        "SELECT status, client_id, stock_deducted FROM export_orders WHERE id = ? FOR UPDATE",
+        "SELECT status, client_id, stock_deducted, invoice_number FROM export_orders WHERE id = ? FOR UPDATE",
         [req.params.id]
       );
       if (!existingOrder) {
@@ -346,7 +366,13 @@ ordersRouter.put(
       const previousItems = existingOrder.stock_deducted
         ? await orderItemsForStock(connection, req.params.id)
         : [];
-      const reservedItems = await reserveStock(connection, input.items, previousItems);
+      const reservedItems = await reserveStock(connection, input.items, previousItems, {
+        movementType: "order_adjustment",
+        orderId: req.params.id,
+        referenceNumber: existingOrder.invoice_number,
+        notes: "Stock difference recorded after export order edit.",
+        createdBy: req.user.id
+      });
       await connection.execute(
         `UPDATE export_orders SET ${orderColumns.map((column) => `${column}=?`).join(", ")}
           , stock_deducted=TRUE
@@ -406,7 +432,7 @@ ordersRouter.patch(
     try {
       await connection.beginTransaction();
       const [[order]] = await connection.execute(
-        "SELECT status, stock_deducted FROM export_orders WHERE id = ? FOR UPDATE",
+        "SELECT status, stock_deducted, invoice_number FROM export_orders WHERE id = ? FOR UPDATE",
         [req.params.id]
       );
       if (!order) {
@@ -429,7 +455,15 @@ ordersRouter.patch(
           error.status = 409;
           throw error;
         }
-        if (order.stock_deducted) await restoreOrderStock(connection, req.params.id);
+        if (order.stock_deducted) {
+          await restoreOrderStock(connection, req.params.id, {
+            movementType: "order_reversal",
+            orderId: req.params.id,
+            referenceNumber: order.invoice_number,
+            notes: "Stock restored after export order cancellation.",
+            createdBy: req.user.id
+          });
+        }
       }
       await connection.execute(
         `UPDATE export_orders
@@ -458,7 +492,7 @@ ordersRouter.delete(
     try {
       await connection.beginTransaction();
       const [[order]] = await connection.execute(
-        "SELECT status, stock_deducted FROM export_orders WHERE id = ? FOR UPDATE",
+        "SELECT status, stock_deducted, invoice_number FROM export_orders WHERE id = ? FOR UPDATE",
         [req.params.id]
       );
       if (!order) {
@@ -479,7 +513,15 @@ ordersRouter.delete(
           message: "This order has recorded payments and cannot be deleted."
         });
       }
-      if (order.stock_deducted) await restoreOrderStock(connection, req.params.id);
+      if (order.stock_deducted) {
+        await restoreOrderStock(connection, req.params.id, {
+          movementType: "order_reversal",
+          orderId: req.params.id,
+          referenceNumber: order.invoice_number,
+          notes: "Stock restored before export order deletion.",
+          createdBy: req.user.id
+        });
+      }
       await connection.execute("DELETE FROM export_orders WHERE id = ?", [req.params.id]);
       await connection.commit();
       res.status(204).end();

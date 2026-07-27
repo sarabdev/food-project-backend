@@ -172,6 +172,40 @@ CREATE TABLE IF NOT EXISTS export_order_items (
   UNIQUE KEY uq_order_line (export_order_id, line_number)
 );
 
+CREATE TABLE IF NOT EXISTS stock_movements (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  product_id BIGINT UNSIGNED NOT NULL,
+  movement_date DATE NOT NULL,
+  movement_type ENUM(
+    'opening',
+    'restock',
+    'customer_return',
+    'damage',
+    'adjustment_in',
+    'adjustment_out',
+    'order',
+    'order_adjustment',
+    'order_reversal'
+  ) NOT NULL,
+  quantity_change DECIMAL(14,3) NOT NULL,
+  export_order_id BIGINT UNSIGNED NULL,
+  reference_number VARCHAR(120) NULL,
+  notes VARCHAR(500) NULL,
+  low_stock_alert DECIMAL(14,3) NULL,
+  net_weight_per_carton DECIMAL(12,3) NULL,
+  gross_weight_per_carton DECIMAL(12,3) NULL,
+  client_price_per_carton DECIMAL(14,4) NULL,
+  customs_price_per_kg DECIMAL(14,4) NULL,
+  created_by BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_stock_movement_product FOREIGN KEY (product_id) REFERENCES products(id),
+  CONSTRAINT fk_stock_movement_order FOREIGN KEY (export_order_id) REFERENCES export_orders(id) ON DELETE SET NULL,
+  CONSTRAINT fk_stock_movement_user FOREIGN KEY (created_by) REFERENCES users(id),
+  INDEX idx_stock_movement_date (movement_date),
+  INDEX idx_stock_movement_product_date (product_id, movement_date),
+  INDEX idx_stock_movement_order (export_order_id)
+);
+
 CREATE TABLE IF NOT EXISTS order_payments (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   export_order_id BIGINT UNSIGNED NOT NULL,

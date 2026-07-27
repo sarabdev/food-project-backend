@@ -20,6 +20,8 @@ const permissions = [
   ["products.create", "products", "create"],
   ["products.edit", "products", "edit"],
   ["products.delete", "products", "delete"],
+  ["stock.view", "stock", "view"],
+  ["stock.record", "stock", "record"],
   ["parties.view", "parties", "view"],
   ["parties.create", "parties", "create"],
   ["parties.edit", "parties", "edit"],
@@ -57,6 +59,11 @@ async function initialize() {
   await ensureColumn(connection, "products", "packaging_details", "JSON NULL AFTER pieces_per_unit");
   await ensureColumn(connection, "products", "stock_in_hand", "DECIMAL(14,3) NOT NULL DEFAULT 0 AFTER packaging_details");
   await ensureColumn(connection, "products", "low_stock_alert", "DECIMAL(14,3) NOT NULL DEFAULT 0 AFTER stock_in_hand");
+  await ensureColumn(connection, "stock_movements", "low_stock_alert", "DECIMAL(14,3) NULL AFTER notes");
+  await ensureColumn(connection, "stock_movements", "net_weight_per_carton", "DECIMAL(12,3) NULL AFTER low_stock_alert");
+  await ensureColumn(connection, "stock_movements", "gross_weight_per_carton", "DECIMAL(12,3) NULL AFTER net_weight_per_carton");
+  await ensureColumn(connection, "stock_movements", "client_price_per_carton", "DECIMAL(14,4) NULL AFTER gross_weight_per_carton");
+  await ensureColumn(connection, "stock_movements", "customs_price_per_kg", "DECIMAL(14,4) NULL AFTER client_price_per_carton");
   await migrateLegacyCartonPacking(connection);
 
   for (const [key, moduleName, actionName] of permissions) {
@@ -96,7 +103,7 @@ async function initialize() {
      WHERE permission_key IN (
        'dashboard.view','orders.view','orders.create','orders.edit',
        'documents.preview','documents.print','products.view','parties.view',
-       'ledger.view','ledger.record_payment','reports.view'
+       'stock.view','stock.record','ledger.view','ledger.record_payment','reports.view'
      )`,
     [docsRole.id]
   );
@@ -108,7 +115,7 @@ async function initialize() {
      WHERE permission_key IN (
        'dashboard.view','orders.view','orders.edit',
        'documents.preview','documents.print','products.view','parties.view',
-       'ledger.view','reports.view'
+       'stock.view','stock.record','ledger.view','reports.view'
      )`,
     [shippingRole.id]
   );
@@ -119,7 +126,7 @@ async function initialize() {
      SELECT ?, id FROM permissions
      WHERE permission_key IN (
        'dashboard.view','orders.view','documents.preview','products.view','parties.view',
-       'ledger.view','reports.view'
+       'stock.view','ledger.view','reports.view'
      )`,
     [viewerRole.id]
   );
@@ -131,6 +138,10 @@ async function initialize() {
      ON DUPLICATE KEY UPDATE role_id = VALUES(role_id)`,
     [adminRole.id, passwordHash]
   );
+  const [[adminUser]] = await connection.execute(
+    "SELECT id FROM users WHERE email = 'admin@zafood.local'"
+  );
+  await migrateOpeningStock(connection, adminUser.id);
 
   await connection.execute(
     `INSERT INTO company_settings (
@@ -202,4 +213,23 @@ async function migrateLegacyCartonPacking(connection) {
       ]
     );
   }
+}
+
+async function migrateOpeningStock(connection, createdBy) {
+  await connection.execute(
+    `INSERT INTO stock_movements (
+      product_id, movement_date, movement_type, quantity_change,
+      reference_number, notes, created_by
+    )
+    SELECT p.id, CURDATE(), 'opening', p.stock_in_hand,
+      'Opening balance migration',
+      'Opening balance created when dated stock tracking was enabled.',
+      ?
+    FROM products p
+    WHERE ABS(p.stock_in_hand) > 0.0001
+      AND NOT EXISTS (
+        SELECT 1 FROM stock_movements sm WHERE sm.product_id = p.id
+      )`,
+    [createdBy]
+  );
 }

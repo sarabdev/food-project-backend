@@ -13,6 +13,7 @@ import { usersRouter } from "./routes/users.routes.js";
 import { ordersRouter } from "./routes/orders.routes.js";
 import { ledgerRouter } from "./routes/ledger.routes.js";
 import { reportsRouter } from "./routes/reports.routes.js";
+import { stockRouter } from "./routes/stock.routes.js";
 import { errorHandler, notFound } from "./middleware/error.js";
 
 const app = express();
@@ -37,6 +38,7 @@ app.use("/api/users", usersRouter);
 app.use("/api/orders", ordersRouter);
 app.use("/api/ledger", ledgerRouter);
 app.use("/api/reports", reportsRouter);
+app.use("/api/stock", stockRouter);
 
 app.use(notFound);
 app.use(errorHandler);
