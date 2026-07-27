@@ -1,10 +1,16 @@
 import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../database/pool.js";
-import { authenticate, requirePermission } from "../middleware/auth.js";
+import { authenticate, requireAnyPermission, requirePermission } from "../middleware/auth.js";
 import { recordStockMovement } from "../services/stockMovements.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { reserveInvoiceNumber } from "../utils/orderNumber.js";
+
+function isGatePassOnlyUser(user) {
+  return user.permissions.includes("gate_pass.view")
+    && !user.permissions.includes("documents.preview")
+    && !user.permissions.includes("orders.edit");
+}
 
 const itemSchema = z.object({
   product_id: z.coerce.number().int().positive(),
@@ -226,7 +232,36 @@ ordersRouter.get(
        GROUP BY o.id
        ORDER BY o.created_at DESC`
     );
+    if (isGatePassOnlyUser(req.user)) {
+      return res.json({
+        orders: orders.map((order) => ({
+          id: order.id,
+          invoice_number: order.invoice_number,
+          status: order.status,
+          contract_date: order.contract_date,
+          created_at: order.created_at,
+          client_name: order.client_name,
+          total_packages: order.total_packages,
+          total_net_weight: order.total_net_weight,
+          total_gross_weight: order.total_gross_weight
+        }))
+      });
+    }
     res.json({ orders });
+  })
+);
+
+ordersRouter.get(
+  "/gate-pass/options",
+  requireAnyPermission("orders.edit", "gate_pass.edit"),
+  asyncHandler(async (req, res) => {
+    const [parties] = await pool.query(
+      `SELECT id, name, contact_person, phone
+       FROM parties
+       WHERE party_type = 'clearing_agent' AND is_active = TRUE
+       ORDER BY name`
+    );
+    res.json({ parties });
   })
 );
 
@@ -270,6 +305,47 @@ ordersRouter.get(
       client_value: item.is_sample ? 0 : item.quantity * item.client_price_per_carton,
       customs_value: item.is_sample ? 0 : item.quantity * item.net_weight_per_carton * item.customs_price_per_kg
     }));
+    if (isGatePassOnlyUser(req.user)) {
+      const order = orders[0];
+      return res.json({
+        order: {
+          id: order.id,
+          invoice_number: order.invoice_number,
+          status: order.status,
+          contract_date: order.contract_date,
+          client_name: order.client_name,
+          container_number: order.container_number,
+          clearing_agent_id: order.clearing_agent_id,
+          clearing_agent_name: order.clearing_agent_name,
+          clearing_agent_phone: order.clearing_agent_phone,
+          clearing_agent_contact: order.clearing_agent_contact,
+          transporter_name: order.transporter_name,
+          transporter_contact: order.transporter_contact,
+          transporter_phone: order.transporter_phone,
+          truck_number: order.truck_number,
+          driver_name: order.driver_name,
+          driver_phone: order.driver_phone,
+          loading_address: order.loading_address,
+          delivery_address: order.delivery_address,
+          seal_numbers: order.seal_numbers,
+          items: calculatedItems.map((item) => ({
+            id: item.id,
+            product_id: item.product_id,
+            product_name: item.product_name,
+            description_override: item.description_override,
+            quantity: item.quantity,
+            quantity_unit: item.quantity_unit,
+            units_per_carton: item.units_per_carton,
+            is_sample: item.is_sample,
+            product_unit_weight_grams: item.product_unit_weight_grams,
+            product_pieces_per_unit: item.product_pieces_per_unit,
+            product_package_type: item.product_package_type,
+            total_net_weight: item.total_net_weight,
+            total_gross_weight: item.total_gross_weight
+          }))
+        }
+      });
+    }
     res.json({ order: { ...orders[0], items: calculatedItems } });
   })
 );
@@ -393,7 +469,7 @@ ordersRouter.put(
 
 ordersRouter.patch(
   "/:id/gate-pass",
-  requirePermission("orders.edit"),
+  requireAnyPermission("orders.edit", "gate_pass.edit"),
   asyncHandler(async (req, res) => {
     const input = gatePassSchema.parse(req.body);
     const [result] = await pool.execute(
@@ -536,7 +612,6 @@ ordersRouter.delete(
 
 ordersRouter.post(
   "/:id/document-audit",
-  requirePermission("documents.preview"),
   asyncHandler(async (req, res) => {
     const input = z.object({
       document_type: z.enum([
@@ -546,6 +621,14 @@ ordersRouter.post(
       ]),
       action_name: z.enum(["previewed", "printed", "downloaded"])
     }).parse(req.body);
+    const isPrintAction = ["printed", "downloaded"].includes(input.action_name);
+    const allowed = input.document_type === "gate_pass"
+      ? req.user.permissions.includes(isPrintAction ? "gate_pass.print" : "gate_pass.view")
+        || req.user.permissions.includes(isPrintAction ? "documents.print" : "documents.preview")
+      : req.user.permissions.includes(isPrintAction ? "documents.print" : "documents.preview");
+    if (!allowed) {
+      return res.status(403).json({ message: "You do not have permission for this document action." });
+    }
     await pool.execute(
       `INSERT INTO document_audit_logs
        (export_order_id, user_id, document_type, action_name)

@@ -16,6 +16,9 @@ const permissions = [
   ["orders.confirm", "orders", "confirm"],
   ["documents.preview", "documents", "preview"],
   ["documents.print", "documents", "print"],
+  ["gate_pass.view", "gate_pass", "view"],
+  ["gate_pass.edit", "gate_pass", "edit"],
+  ["gate_pass.print", "gate_pass", "print"],
   ["products.view", "products", "view"],
   ["products.create", "products", "create"],
   ["products.edit", "products", "edit"],
@@ -85,6 +88,7 @@ async function initialize() {
      VALUES
        ('Documentation Officer', 'Creates orders and export documents', TRUE),
        ('Shipping Officer', 'Manages shipment and gate pass information', TRUE),
+       ('Gate Pass Officer', 'Can view export orders and manage only gate pass information', TRUE),
        ('Viewer', 'Read-only access', TRUE)
      ON DUPLICATE KEY UPDATE description = VALUES(description)`
   );
@@ -129,6 +133,16 @@ async function initialize() {
        'stock.view','ledger.view','reports.view'
      )`,
     [viewerRole.id]
+  );
+
+  const [[gatePassRole]] = await connection.execute("SELECT id FROM roles WHERE name = 'Gate Pass Officer'");
+  await connection.execute(
+    `INSERT IGNORE INTO role_permissions (role_id, permission_id)
+     SELECT ?, id FROM permissions
+     WHERE permission_key IN (
+       'orders.view','gate_pass.view','gate_pass.edit','gate_pass.print'
+     )`,
+    [gatePassRole.id]
   );
 
   const passwordHash = await bcrypt.hash("Admin@123", 12);
