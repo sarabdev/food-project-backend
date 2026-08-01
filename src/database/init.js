@@ -96,7 +96,7 @@ async function initialize() {
      SELECT ?, id FROM permissions
      WHERE permission_key IN (
        'dashboard.view','orders.view','orders.create','orders.edit',
-       'documents.preview','documents.print','products.view','parties.view',
+       'documents.preview','documents.print','products.view','parties.view','parties.create',
        'ledger.view','ledger.record_payment','reports.view'
      )`,
     [docsRole.id]
