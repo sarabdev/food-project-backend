@@ -2,7 +2,6 @@ import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../database/pool.js";
 import { authenticate, requireAnyPermission, requirePermission } from "../middleware/auth.js";
-import { recordStockMovement } from "../services/stockMovements.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { reserveInvoiceNumber } from "../utils/orderNumber.js";
 
@@ -112,103 +111,34 @@ async function replaceItems(connection, orderId, items) {
   }
 }
 
-function demandByProduct(items) {
-  const demand = new Map();
-  for (const item of items) {
-    const productId = Number(item.product_id);
-    const stockUnits = Number(item.quantity || 0) * Number(item.units_per_carton || 0);
-    demand.set(productId, (demand.get(productId) || 0) + stockUnits);
-  }
-  return demand;
-}
-
-async function reserveStock(connection, items, previousItems = [], movement = {}) {
-  const productIds = [...new Set([
-    ...items.map((item) => Number(item.product_id)),
-    ...previousItems.map((item) => Number(item.product_id))
-  ])].sort((left, right) => left - right);
-  if (!productIds.length) return items;
-
+async function normalizeContractItems(connection, items) {
+  const productIds = [...new Set(items.map((item) => Number(item.product_id)))];
   const placeholders = productIds.map(() => "?").join(", ");
   const [products] = await connection.execute(
-    `SELECT id, name, package_type, units_per_carton, stock_in_hand, is_active
-     FROM products
-     WHERE id IN (${placeholders})
-     ORDER BY id
-     FOR UPDATE`,
+    `SELECT id, name, units_per_carton, is_active FROM products WHERE id IN (${placeholders})`,
     productIds
   );
-  const productsById = new Map(products.map((product) => [Number(product.id), product]));
+  const byId = new Map(products.map((product) => [Number(product.id), product]));
   if (products.length !== productIds.length) {
     const error = new Error("One or more selected products are unavailable.");
     error.status = 409;
     throw error;
   }
-
-  const normalizedItems = items.map((item) => {
-    const product = productsById.get(Number(item.product_id));
+  return items.map((item) => {
+    const product = byId.get(Number(item.product_id));
     if (!product.is_active) {
-      const error = new Error(`${product.name} is inactive and cannot be added to an order.`);
+      const error = new Error(`${product.name} is inactive and cannot be added to a sales contract.`);
       error.status = 409;
       throw error;
     }
-    const packsPerCarton = Number(product.units_per_carton || 0);
-    if (!packsPerCarton) {
-      const error = new Error(`Set packs per carton for ${product.name} before creating an order.`);
+    const unitsPerCarton = Number(product.units_per_carton || 0);
+    if (!unitsPerCarton) {
+      const error = new Error(`Set packs per carton for ${product.name} before creating a sales contract.`);
       error.status = 409;
       throw error;
     }
-    return { ...item, units_per_carton: packsPerCarton };
+    return { ...item, units_per_carton: unitsPerCarton };
   });
-  const newDemand = demandByProduct(normalizedItems);
-  const oldDemand = demandByProduct(previousItems);
-
-  for (const productId of productIds) {
-    const product = productsById.get(productId);
-    const difference = (newDemand.get(productId) || 0) - (oldDemand.get(productId) || 0);
-    if (difference > Number(product.stock_in_hand) + 0.0001) {
-      const packLabel = String(product.package_type || "pack").toLowerCase();
-      const error = new Error(
-        `Insufficient stock for ${product.name}. Available: ${Number(product.stock_in_hand).toLocaleString()} ${packLabel}s; required: ${difference.toLocaleString()} ${packLabel}s.`
-      );
-      error.status = 409;
-      throw error;
-    }
-    if (difference) {
-      await connection.execute(
-        "UPDATE products SET stock_in_hand = stock_in_hand - ? WHERE id = ?",
-        [difference, productId]
-      );
-      if (movement.movementType) {
-        await recordStockMovement(connection, {
-          productId,
-          movementDate: movement.movementDate || null,
-          movementType: movement.movementType,
-          quantityChange: -difference,
-          exportOrderId: movement.orderId || null,
-          referenceNumber: movement.referenceNumber || null,
-          notes: movement.notes || null,
-          createdBy: movement.createdBy
-        });
-      }
-    }
-  }
-  return normalizedItems;
-}
-
-async function orderItemsForStock(connection, orderId) {
-  const [items] = await connection.execute(
-    `SELECT product_id, quantity, units_per_carton
-     FROM export_order_items
-     WHERE export_order_id = ?`,
-    [orderId]
-  );
-  return items;
-}
-
-async function restoreOrderStock(connection, orderId, movement) {
-  const items = await orderItemsForStock(connection, orderId);
-  await reserveStock(connection, [], items, movement);
 }
 
 export const ordersRouter = Router();
@@ -219,12 +149,16 @@ ordersRouter.get(
   requirePermission("orders.view"),
   asyncHandler(async (req, res) => {
     const [orders] = await pool.query(
-      `SELECT o.id, o.invoice_number, o.status, o.contract_date, o.created_at,
+      `SELECT o.id, o.invoice_number, o.sales_contract_number, o.status, o.contract_date, o.created_at,
         o.currency, c.name AS client_name, cc.name AS customs_consignee_name,
         COALESCE(SUM(i.quantity), 0) AS total_packages,
         COALESCE(SUM(i.quantity * i.net_weight_per_carton), 0) AS total_net_weight,
         COALESCE(SUM(i.quantity * i.gross_weight_per_carton), 0) AS total_gross_weight,
-        COALESCE(SUM(CASE WHEN i.is_sample = FALSE THEN i.quantity * i.client_price_per_carton ELSE 0 END), 0) AS client_value
+        COALESCE(SUM(CASE WHEN i.is_sample = FALSE THEN i.quantity * i.client_price_per_carton ELSE 0 END), 0) AS client_value,
+        COALESCE(SUM(i.quantity), 0) AS contracted_quantity,
+        COALESCE(SUM((SELECT COALESCE(SUM(sa.quantity), 0)
+          FROM shipment_allocations sa JOIN shipments s ON s.id = sa.shipment_id
+          WHERE sa.export_order_item_id = i.id AND s.status <> 'cancelled')), 0) AS shipped_quantity
        FROM export_orders o
        JOIN parties c ON c.id = o.client_id
        JOIN parties cc ON cc.id = o.customs_consignee_id
@@ -286,6 +220,9 @@ ordersRouter.get(
     if (!orders[0]) return res.status(404).json({ message: "Order not found." });
     const [items] = await pool.execute(
       `SELECT i.*, p.name AS product_name, p.hs_code, p.description AS product_description,
+        COALESCE((SELECT SUM(sa.quantity)
+          FROM shipment_allocations sa JOIN shipments s ON s.id = sa.shipment_id
+          WHERE sa.export_order_item_id = i.id AND s.status <> 'cancelled'), 0) AS allocated_quantity,
         p.unit_weight_grams AS product_unit_weight_grams,
         p.pieces_per_unit AS product_pieces_per_unit,
         p.package_type AS product_package_type,
@@ -299,6 +236,7 @@ ordersRouter.get(
     );
     const calculatedItems = items.map((item) => ({
       ...item,
+      remaining_quantity: Math.max(0, Number(item.quantity) - Number(item.allocated_quantity)),
       total_net_weight: item.quantity * item.net_weight_per_carton,
       total_gross_weight: item.quantity * item.gross_weight_per_carton,
       total_units: item.quantity * item.units_per_carton,
@@ -370,19 +308,8 @@ ordersRouter.post(
         ) VALUES (${new Array(orderColumns.length + 4).fill("?").join(", ")})`,
         [number.invoiceNumber, number.sequence, number.year, req.user.id, ...values]
       );
-      const reservedItems = await reserveStock(connection, input.items, [], {
-        movementType: "order",
-        movementDate: input.contract_date,
-        orderId: result.insertId,
-        referenceNumber: number.invoiceNumber,
-        notes: "Stock issued for export order.",
-        createdBy: req.user.id
-      });
-      await replaceItems(connection, result.insertId, reservedItems);
-      await connection.execute(
-        "UPDATE export_orders SET stock_deducted = TRUE WHERE id = ?",
-        [result.insertId]
-      );
+      const normalizedItems = await normalizeContractItems(connection, input.items);
+      await replaceItems(connection, result.insertId, normalizedItems);
       await connection.commit();
       res.status(201).json({ id: result.insertId, invoice_number: number.invoiceNumber });
     } catch (error) {
@@ -403,7 +330,7 @@ ordersRouter.put(
     try {
       await connection.beginTransaction();
       const [[existingOrder]] = await connection.execute(
-        "SELECT status, client_id, stock_deducted, invoice_number FROM export_orders WHERE id = ? FOR UPDATE",
+        "SELECT status, client_id, invoice_number FROM export_orders WHERE id = ? FOR UPDATE",
         [req.params.id]
       );
       if (!existingOrder) {
@@ -413,6 +340,18 @@ ordersRouter.put(
       }
       if (["shipped", "completed", "cancelled"].includes(existingOrder.status)) {
         const error = new Error("Shipped, completed or cancelled orders cannot be edited.");
+        error.status = 409;
+        throw error;
+      }
+      const [[allocationInfo]] = await connection.execute(
+        `SELECT COUNT(*) AS allocation_count
+         FROM shipment_allocations sa
+         JOIN export_order_items i ON i.id = sa.export_order_item_id
+         WHERE i.export_order_id = ?`,
+        [req.params.id]
+      );
+      if (allocationInfo.allocation_count) {
+        const error = new Error("This sales contract has shipment allocations and can no longer be edited.");
         error.status = 409;
         throw error;
       }
@@ -439,23 +378,13 @@ ordersRouter.put(
         error.status = 409;
         throw error;
       }
-      const previousItems = existingOrder.stock_deducted
-        ? await orderItemsForStock(connection, req.params.id)
-        : [];
-      const reservedItems = await reserveStock(connection, input.items, previousItems, {
-        movementType: "order_adjustment",
-        orderId: req.params.id,
-        referenceNumber: existingOrder.invoice_number,
-        notes: "Stock difference recorded after export order edit.",
-        createdBy: req.user.id
-      });
       await connection.execute(
         `UPDATE export_orders SET ${orderColumns.map((column) => `${column}=?`).join(", ")}
-          , stock_deducted=TRUE
          WHERE id=?`,
         [...orderColumns.map((column) => orderValue(input, column)), req.params.id]
       );
-      await replaceItems(connection, req.params.id, reservedItems);
+      const normalizedItems = await normalizeContractItems(connection, input.items);
+      await replaceItems(connection, req.params.id, normalizedItems);
       await connection.commit();
       res.json({ message: "Order updated." });
     } catch (error) {
@@ -508,7 +437,7 @@ ordersRouter.patch(
     try {
       await connection.beginTransaction();
       const [[order]] = await connection.execute(
-        "SELECT status, stock_deducted, invoice_number FROM export_orders WHERE id = ? FOR UPDATE",
+        "SELECT status, invoice_number FROM export_orders WHERE id = ? FOR UPDATE",
         [req.params.id]
       );
       if (!order) {
@@ -522,6 +451,19 @@ ordersRouter.patch(
         throw error;
       }
       if (status === "cancelled" && order.status !== "cancelled") {
+        const [[allocationInfo]] = await connection.execute(
+          `SELECT COUNT(*) AS allocation_count FROM shipment_allocations sa
+           JOIN export_order_items i ON i.id = sa.export_order_item_id
+           WHERE i.export_order_id = ? AND EXISTS (
+             SELECT 1 FROM shipments s WHERE s.id = sa.shipment_id AND s.status <> 'cancelled'
+           )`,
+          [req.params.id]
+        );
+        if (allocationInfo.allocation_count) {
+          const error = new Error("A sales contract with active shipment allocations cannot be cancelled.");
+          error.status = 409;
+          throw error;
+        }
         const [[payments]] = await connection.execute(
           "SELECT COUNT(*) AS payment_count FROM order_payments WHERE export_order_id = ?",
           [req.params.id]
@@ -531,23 +473,13 @@ ordersRouter.patch(
           error.status = 409;
           throw error;
         }
-        if (order.stock_deducted) {
-          await restoreOrderStock(connection, req.params.id, {
-            movementType: "order_reversal",
-            orderId: req.params.id,
-            referenceNumber: order.invoice_number,
-            notes: "Stock restored after export order cancellation.",
-            createdBy: req.user.id
-          });
-        }
       }
       await connection.execute(
         `UPDATE export_orders
          SET status=?,
-           stock_deducted=IF(?='cancelled', FALSE, stock_deducted),
            confirmed_at=IF(?='confirmed' AND confirmed_at IS NULL, NOW(), confirmed_at)
          WHERE id=?`,
-        [status, status, status, req.params.id]
+        [status, status, req.params.id]
       );
       await connection.commit();
       res.json({ message: "Order status updated." });
@@ -568,7 +500,7 @@ ordersRouter.delete(
     try {
       await connection.beginTransaction();
       const [[order]] = await connection.execute(
-        "SELECT status, stock_deducted, invoice_number FROM export_orders WHERE id = ? FOR UPDATE",
+        "SELECT status, invoice_number FROM export_orders WHERE id = ? FOR UPDATE",
         [req.params.id]
       );
       if (!order) {
@@ -579,6 +511,16 @@ ordersRouter.delete(
         await connection.rollback();
         return res.status(409).json({ message: "Shipped or completed orders cannot be deleted." });
       }
+      const [[allocations]] = await connection.execute(
+        `SELECT COUNT(*) AS allocation_count FROM shipment_allocations sa
+         JOIN export_order_items i ON i.id = sa.export_order_item_id
+         WHERE i.export_order_id = ?`,
+        [req.params.id]
+      );
+      if (allocations.allocation_count) {
+        await connection.rollback();
+        return res.status(409).json({ message: "A sales contract with shipment allocations cannot be deleted." });
+      }
       const [[payments]] = await connection.execute(
         "SELECT COUNT(*) AS payment_count FROM order_payments WHERE export_order_id = ?",
         [req.params.id]
@@ -587,15 +529,6 @@ ordersRouter.delete(
         await connection.rollback();
         return res.status(409).json({
           message: "This order has recorded payments and cannot be deleted."
-        });
-      }
-      if (order.stock_deducted) {
-        await restoreOrderStock(connection, req.params.id, {
-          movementType: "order_reversal",
-          orderId: req.params.id,
-          referenceNumber: order.invoice_number,
-          notes: "Stock restored before export order deletion.",
-          createdBy: req.user.id
         });
       }
       await connection.execute("DELETE FROM export_orders WHERE id = ?", [req.params.id]);
@@ -622,6 +555,9 @@ ordersRouter.post(
       action_name: z.enum(["previewed", "printed", "downloaded"])
     }).parse(req.body);
     const isPrintAction = ["printed", "downloaded"].includes(input.action_name);
+    if (input.document_type !== "sale_contract") {
+      return res.status(409).json({ message: "Shipping documents must be generated from a shipment, not directly from a sales contract." });
+    }
     const allowed = input.document_type === "gate_pass"
       ? req.user.permissions.includes(isPrintAction ? "gate_pass.print" : "gate_pass.view")
         || req.user.permissions.includes(isPrintAction ? "documents.print" : "documents.preview")

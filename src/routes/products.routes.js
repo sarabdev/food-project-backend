@@ -6,7 +6,6 @@ import { fileURLToPath } from "url";
 import { z } from "zod";
 import { pool } from "../database/pool.js";
 import { authenticate, requirePermission } from "../middleware/auth.js";
-import { recordStockMovement } from "../services/stockMovements.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -50,9 +49,6 @@ const productSchema = z.object({
   units_per_carton: z.coerce.number().min(0).default(0),
   pieces_per_unit: z.coerce.number().min(0).default(0),
   packaging_details: packagingDetailsSchema.default({}),
-  stock_in_hand: z.coerce.number().min(0).default(0),
-  opening_stock_date: z.union([z.string().date(), z.literal("")]).optional(),
-  low_stock_alert: z.coerce.number().min(0).default(0),
   unit_weight_grams: z.coerce.number().min(0).default(0),
   net_weight_per_carton: z.coerce.number().min(0),
   gross_weight_per_carton: z.coerce.number().min(0),
@@ -87,8 +83,6 @@ function productValues(input) {
     input.units_per_carton,
     input.pieces_per_unit,
     JSON.stringify(input.packaging_details),
-    input.stock_in_hand,
-    input.low_stock_alert,
     input.unit_weight_grams,
     input.net_weight_per_carton,
     input.gross_weight_per_carton,
@@ -109,6 +103,10 @@ function productUpdateValues(input) {
     input.pieces_per_unit,
     JSON.stringify(input.packaging_details),
     input.unit_weight_grams,
+    input.net_weight_per_carton,
+    input.gross_weight_per_carton,
+    input.default_client_price,
+    input.default_customs_price_per_kg,
     input.image_url
   ];
 }
@@ -133,41 +131,16 @@ productsRouter.post(
   imageUpload.single("image"),
   asyncHandler(async (req, res) => {
     const input = parseBody(req.body, req.file);
-    const connection = await pool.getConnection();
-    try {
-      await connection.beginTransaction();
-      const [result] = await connection.execute(
-        `INSERT INTO products (
-          sku, name, description, hs_code, package_type, units_per_carton,
-          pieces_per_unit, packaging_details, stock_in_hand, low_stock_alert,
-          unit_weight_grams, net_weight_per_carton,
-          gross_weight_per_carton, default_client_price,
-          default_customs_price_per_kg, image_url
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        productValues(input)
-      );
-      await recordStockMovement(connection, {
-        productId: result.insertId,
-        movementDate: input.opening_stock_date || null,
-        movementType: "opening",
-        quantityChange: input.stock_in_hand,
-        referenceNumber: "Opening stock",
-        notes: "Opening stock entered when the product was created.",
-        lowStockAlert: input.low_stock_alert,
-        netWeightPerCarton: input.net_weight_per_carton,
-        grossWeightPerCarton: input.gross_weight_per_carton,
-        clientPricePerCarton: input.default_client_price,
-        customsPricePerKg: input.default_customs_price_per_kg,
-        createdBy: req.user.id
-      });
-      await connection.commit();
-      res.status(201).json({ id: result.insertId });
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
-    }
+    const [result] = await pool.execute(
+      `INSERT INTO products (
+        sku, name, description, hs_code, package_type, units_per_carton,
+        pieces_per_unit, packaging_details, unit_weight_grams, net_weight_per_carton,
+        gross_weight_per_carton, default_client_price,
+        default_customs_price_per_kg, image_url
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      productValues(input)
+    );
+    res.status(201).json({ id: result.insertId });
   })
 );
 
@@ -180,7 +153,9 @@ productsRouter.put(
     await pool.execute(
       `UPDATE products SET
         sku=?, name=?, description=?, hs_code=?, package_type=?, units_per_carton=?,
-        pieces_per_unit=?, packaging_details=?, unit_weight_grams=?, image_url=?
+        pieces_per_unit=?, packaging_details=?, unit_weight_grams=?,
+        net_weight_per_carton=?, gross_weight_per_carton=?, default_client_price=?,
+        default_customs_price_per_kg=?, image_url=?
        WHERE id=?`,
       [...productUpdateValues(input), req.params.id]
     );
