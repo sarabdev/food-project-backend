@@ -57,11 +57,17 @@ async function initialize() {
   await connection.query(`USE \`${env.db.database}\``);
   const schema = await fs.readFile(path.join(directory, "schema.sql"), "utf8");
   await connection.query(schema);
+  await connection.query(
+    "ALTER TABLE parties MODIFY COLUMN party_type ENUM('client', 'customs_consignee', 'notify_party', 'clearing_agent') NOT NULL"
+  );
   await ensureColumn(connection, "export_orders", "transporter_name", "VARCHAR(180) NULL AFTER clearing_agent_id");
   await ensureColumn(connection, "export_orders", "transporter_contact", "VARCHAR(120) NULL AFTER transporter_name");
   await ensureColumn(connection, "export_orders", "transporter_phone", "VARCHAR(60) NULL AFTER transporter_contact");
   await ensureColumn(connection, "products", "packaging_details", "JSON NULL AFTER pieces_per_unit");
   await ensureColumn(connection, "export_orders", "bank_account_id", "BIGINT UNSIGNED NULL AFTER customs_consignee_id");
+  await ensureColumn(connection, "shipments", "gd_number", "VARCHAR(120) NULL AFTER shipment_date");
+  await ensureColumn(connection, "shipments", "fi_number", "VARCHAR(120) NULL AFTER gd_number");
+  await ensureColumn(connection, "shipments", "also_notify_party_id", "BIGINT UNSIGNED NULL AFTER customs_consignee_id");
   await ensureColumn(connection, "shipment_allocations", "shipment_container_id", "BIGINT UNSIGNED NULL AFTER shipment_id");
   await migrateLegacyShipmentContainers(connection);
   await migrateLegacyCartonPacking(connection);

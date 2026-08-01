@@ -18,13 +18,23 @@ const optionalId = z.preprocess(
 const shipmentSchema = z.object({
   client_id: z.coerce.number().int().positive(),
   customs_consignee_id: z.coerce.number().int().positive(),
+  also_notify_party_id: optionalId,
   shipment_date: z.string().date(),
+  gd_number: z.string().trim().max(120).optional().nullable(),
+  fi_number: z.string().trim().max(120).optional().nullable(),
   currency: z.string().trim().default("USD"),
   port_of_loading: z.string().trim().optional().nullable(),
   port_of_destination: z.string().trim().optional().nullable(),
   final_destination: z.string().trim().optional().nullable(),
   shipping_type: z.string().trim().optional().nullable(),
   shipped_per: z.string().trim().optional().nullable(),
+  vessel_name: z.string().trim().max(150).optional().nullable(),
+  voyage_number: z.string().trim().max(100).optional().nullable(),
+  bl_number: z.string().trim().max(100).optional().nullable(),
+  bl_date: z.preprocess(
+    (value) => value === "" || value === undefined ? null : value,
+    z.string().date().nullable()
+  ),
   containers: z.array(z.object({
     container_number: z.string().trim().min(1).max(120),
     container_type: z.string().trim().max(80).optional().nullable(),
@@ -247,10 +257,13 @@ shipmentsRouter.get("/:id", requirePermission("orders.view"), asyncHandler(async
       c.name AS client_name, c.address_line_1 AS client_address, c.city AS client_city, c.country AS client_country,
       cc.name AS customs_consignee_name, cc.address_line_1 AS customs_consignee_address,
       cc.city AS customs_consignee_city, cc.country AS customs_consignee_country,
+      anp.name AS also_notify_party_name, anp.address_line_1 AS also_notify_party_address,
+      anp.city AS also_notify_party_city, anp.country AS also_notify_party_country,
       ca.name AS clearing_agent_name, ca.phone AS clearing_agent_phone, ca.contact_person AS clearing_agent_contact,
       GROUP_CONCAT(DISTINCT COALESCE(o.sales_contract_number, o.invoice_number) ORDER BY o.contract_date SEPARATOR ', ') AS sales_contract_number
      FROM shipments s JOIN parties c ON c.id = s.client_id
      JOIN parties cc ON cc.id = s.customs_consignee_id
+     LEFT JOIN parties anp ON anp.id = s.also_notify_party_id
      LEFT JOIN parties ca ON ca.id = s.clearing_agent_id
      LEFT JOIN shipment_allocations sa ON sa.shipment_id = s.id
      LEFT JOIN export_order_items i ON i.id = sa.export_order_item_id
@@ -353,16 +366,20 @@ shipmentsRouter.post("/", requirePermission("orders.create"), asyncHandler(async
     const firstContainer = input.containers[0];
     const [result] = await connection.execute(
       `INSERT INTO shipments (
-        shipment_number, sequence_number, sequence_year, client_id, customs_consignee_id,
-        created_by, shipment_date, currency, port_of_loading, port_of_destination,
-        final_destination, shipping_type, shipped_per, container_number, container_type,
+        shipment_number, sequence_number, sequence_year, client_id, customs_consignee_id, also_notify_party_id,
+        created_by, shipment_date, gd_number, fi_number, currency, port_of_loading, port_of_destination,
+        final_destination, shipping_type, shipped_per, vessel_name, voyage_number,
+        bl_number, bl_date, container_number, container_type,
         cbm, freight_term, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         number.value, number.sequence, number.year, input.client_id, input.customs_consignee_id,
-        req.user.id, input.shipment_date, input.currency, input.port_of_loading || null,
+        input.also_notify_party_id, req.user.id, input.shipment_date, input.gd_number || null, input.fi_number || null,
+        input.currency, input.port_of_loading || null,
         input.port_of_destination || null, input.final_destination || null,
-        input.shipping_type || null, input.shipped_per || null, firstContainer.container_number,
+        input.shipping_type || null, input.shipped_per || null,
+        input.vessel_name || null, input.voyage_number || null,
+        input.bl_number || null, input.bl_date || null, firstContainer.container_number,
         firstContainer.container_type || null, firstContainer.cbm, input.freight_term || null, input.notes || null
       ]
     );
@@ -400,16 +417,20 @@ shipmentsRouter.put("/:id", requirePermission("orders.edit"), asyncHandler(async
     const firstContainer = input.containers[0];
     await connection.execute(
       `UPDATE shipments SET
-        client_id=?, customs_consignee_id=?, shipment_date=?, currency=?,
+        client_id=?, customs_consignee_id=?, also_notify_party_id=?, shipment_date=?, gd_number=?, fi_number=?, currency=?,
         port_of_loading=?, port_of_destination=?, final_destination=?,
-        shipping_type=?, shipped_per=?, container_number=?, container_type=?,
+        shipping_type=?, shipped_per=?, vessel_name=?, voyage_number=?,
+        bl_number=?, bl_date=?, container_number=?, container_type=?,
         cbm=?, freight_term=?, notes=?
        WHERE id=?`,
       [
-        input.client_id, input.customs_consignee_id, input.shipment_date, input.currency,
+        input.client_id, input.customs_consignee_id, input.also_notify_party_id, input.shipment_date,
+        input.gd_number || null, input.fi_number || null, input.currency,
         input.port_of_loading || null, input.port_of_destination || null,
         input.final_destination || null, input.shipping_type || null,
-        input.shipped_per || null, firstContainer.container_number,
+        input.shipped_per || null, input.vessel_name || null,
+        input.voyage_number || null, input.bl_number || null,
+        input.bl_date || null, firstContainer.container_number,
         firstContainer.container_type || null, firstContainer.cbm,
         input.freight_term || null, input.notes || null, req.params.id
       ]

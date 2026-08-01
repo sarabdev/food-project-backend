@@ -4,7 +4,7 @@ import { pool } from "../database/pool.js";
 import { authenticate, requirePermission } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
-const partyTypes = ["client", "customs_consignee", "clearing_agent"];
+const partyTypes = ["client", "customs_consignee", "notify_party", "clearing_agent"];
 
 const partySchema = z.object({
   party_type: z.enum(partyTypes),
@@ -29,7 +29,7 @@ partiesRouter.get(
   requirePermission("parties.view"),
   asyncHandler(async (req, res) => {
     const values = [];
-    let where = "WHERE is_active = TRUE AND party_type IN ('client', 'customs_consignee', 'clearing_agent')";
+    let where = "WHERE is_active = TRUE AND party_type IN ('client', 'customs_consignee', 'notify_party', 'clearing_agent')";
     if (req.query.type) {
       if (!partyTypes.includes(req.query.type)) return res.json({ parties: [] });
       where += " AND party_type = ?";
