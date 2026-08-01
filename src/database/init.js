@@ -57,9 +57,7 @@ async function initialize() {
   await connection.query(`USE \`${env.db.database}\``);
   const schema = await fs.readFile(path.join(directory, "schema.sql"), "utf8");
   await connection.query(schema);
-  await connection.query(
-    "ALTER TABLE parties MODIFY COLUMN party_type ENUM('client', 'customs_consignee', 'notify_party', 'clearing_agent') NOT NULL"
-  );
+  await ensureEnumValue(connection, "parties", "party_type", "notify_party");
   await ensureColumn(connection, "export_orders", "transporter_name", "VARCHAR(180) NULL AFTER clearing_agent_id");
   await ensureColumn(connection, "export_orders", "transporter_contact", "VARCHAR(120) NULL AFTER transporter_name");
   await ensureColumn(connection, "export_orders", "transporter_phone", "VARCHAR(60) NULL AFTER transporter_contact");
@@ -229,6 +227,27 @@ async function ensureColumn(connection, tableName, columnName, definition) {
   if (!columns.length) {
     await connection.query(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   }
+}
+
+async function ensureEnumValue(connection, tableName, columnName, requiredValue) {
+  if (![tableName, columnName].every((identifier) => /^[a-z_]+$/.test(identifier))) {
+    throw new Error("Unsafe database identifier in enum migration.");
+  }
+  const [[column]] = await connection.execute(
+    `SELECT COLUMN_TYPE
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+    [env.db.database, tableName, columnName]
+  );
+  if (!column) throw new Error(`Column ${tableName}.${columnName} does not exist.`);
+  const enumValues = [...column.COLUMN_TYPE.matchAll(/'((?:\\.|[^'])*)'/g)]
+    .map((match) => match[1].replace(/\\'/g, "'").replace(/\\\\/g, "\\"));
+  if (enumValues.includes(requiredValue)) return;
+  enumValues.push(requiredValue);
+  const enumDefinition = enumValues.map((value) => connection.escape(value)).join(", ");
+  await connection.query(
+    `ALTER TABLE \`${tableName}\` MODIFY COLUMN \`${columnName}\` ENUM(${enumDefinition}) NOT NULL`
+  );
 }
 
 async function migrateLegacyShipmentContainers(connection) {
