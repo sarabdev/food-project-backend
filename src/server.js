@@ -14,6 +14,7 @@ import { ordersRouter } from "./routes/orders.routes.js";
 import { ledgerRouter } from "./routes/ledger.routes.js";
 import { reportsRouter } from "./routes/reports.routes.js";
 import { shipmentsRouter } from "./routes/shipments.routes.js";
+import { bankAccountsRouter } from "./routes/bankAccounts.routes.js";
 import { errorHandler, notFound } from "./middleware/error.js";
 
 const app = express();
@@ -37,6 +38,7 @@ app.use("/api/roles", rolesRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/orders", ordersRouter);
 app.use("/api/shipments", shipmentsRouter);
+app.use("/api/bank-accounts", bankAccountsRouter);
 app.use("/api/ledger", ledgerRouter);
 app.use("/api/reports", reportsRouter);
 

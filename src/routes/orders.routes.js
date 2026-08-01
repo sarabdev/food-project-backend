@@ -32,6 +32,7 @@ const optionalId = z.preprocess(
 const orderSchema = z.object({
   client_id: z.coerce.number().int().positive(),
   customs_consignee_id: z.coerce.number().int().positive(),
+  bank_account_id: z.coerce.number().int().positive(),
   contract_date: z.string().date(),
   valid_until: z.string().date().optional().nullable(),
   sales_contract_number: z.string().trim().optional().nullable(),
@@ -44,9 +45,6 @@ const orderSchema = z.object({
   final_destination: z.string().trim().optional().nullable(),
   shipping_type: z.string().trim().optional().nullable(),
   shipped_per: z.string().trim().optional().nullable(),
-  container_number: z.string().trim().optional().nullable(),
-  container_type: z.string().trim().optional().nullable(),
-  cbm: z.coerce.number().min(0).default(0),
   freight_term: z.string().trim().optional().nullable(),
   customer_instructions: z.string().trim().optional().nullable(),
   notes: z.string().trim().optional().nullable(),
@@ -67,10 +65,10 @@ const gatePassSchema = z.object({
 });
 
 const orderColumns = [
-  "client_id", "customs_consignee_id", "contract_date", "valid_until",
+  "client_id", "customs_consignee_id", "bank_account_id", "contract_date", "valid_until",
   "sales_contract_number", "payment_term", "advance_percentage", "freight_amount",
   "currency", "port_of_loading", "port_of_destination", "final_destination",
-  "shipping_type", "shipped_per", "container_number", "container_type", "cbm",
+  "shipping_type", "shipped_per",
   "freight_term", "customer_instructions", "notes"
 ];
 
@@ -84,6 +82,18 @@ function sealValue(value) {
     ? value
     : value.split(/\r?\n|,/);
   return JSON.stringify(seals.map((seal) => seal.trim()).filter(Boolean));
+}
+
+async function validateBankAccount(connection, bankAccountId) {
+  const [[account]] = await connection.execute(
+    "SELECT id FROM bank_accounts WHERE id=? AND is_active=TRUE",
+    [bankAccountId]
+  );
+  if (!account) {
+    const error = new Error("Select an active bank account for this sales contract.");
+    error.status = 409;
+    throw error;
+  }
 }
 
 async function replaceItems(connection, orderId, items) {
@@ -209,11 +219,19 @@ ordersRouter.get(
         cc.name AS customs_consignee_name, cc.address_line_1 AS customs_consignee_address,
         cc.city AS customs_consignee_city, cc.country AS customs_consignee_country,
         ca.name AS clearing_agent_name, ca.phone AS clearing_agent_phone,
-        ca.contact_person AS clearing_agent_contact
+        ca.contact_person AS clearing_agent_contact,
+        ba.account_name AS bank_account_name,
+        ba.beneficiary_name AS bank_beneficiary_name,
+        ba.bank_name, ba.branch_name AS bank_branch_name,
+        ba.account_number AS bank_account_number, ba.iban AS bank_iban,
+        ba.swift_code AS bank_swift_code, ba.currency AS bank_currency,
+        ba.correspondent_bank, ba.correspondent_account,
+        ba.correspondent_swift_code, ba.instructions AS bank_instructions
        FROM export_orders o
        JOIN parties c ON c.id = o.client_id
        JOIN parties cc ON cc.id = o.customs_consignee_id
        LEFT JOIN parties ca ON ca.id = o.clearing_agent_id
+       LEFT JOIN bank_accounts ba ON ba.id = o.bank_account_id
        WHERE o.id = ?`,
       [req.params.id]
     );
@@ -252,7 +270,6 @@ ordersRouter.get(
           status: order.status,
           contract_date: order.contract_date,
           client_name: order.client_name,
-          container_number: order.container_number,
           clearing_agent_id: order.clearing_agent_id,
           clearing_agent_name: order.clearing_agent_name,
           clearing_agent_phone: order.clearing_agent_phone,
@@ -299,6 +316,7 @@ ordersRouter.post(
       const [[settings]] = await connection.query(
         "SELECT invoice_prefix FROM company_settings WHERE id = 1"
       );
+      await validateBankAccount(connection, input.bank_account_id);
       const number = await reserveInvoiceNumber(connection, settings?.invoice_prefix || "ZAFI");
       const values = orderColumns.map((column) => orderValue(input, column));
       const [result] = await connection.execute(
@@ -343,6 +361,7 @@ ordersRouter.put(
         error.status = 409;
         throw error;
       }
+      await validateBankAccount(connection, input.bank_account_id);
       const [[allocationInfo]] = await connection.execute(
         `SELECT COUNT(*) AS allocation_count
          FROM shipment_allocations sa

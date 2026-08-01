@@ -27,6 +27,10 @@ const permissions = [
   ["parties.create", "parties", "create"],
   ["parties.edit", "parties", "edit"],
   ["parties.delete", "parties", "delete"],
+  ["bank_accounts.view", "bank_accounts", "view"],
+  ["bank_accounts.create", "bank_accounts", "create"],
+  ["bank_accounts.edit", "bank_accounts", "edit"],
+  ["bank_accounts.delete", "bank_accounts", "delete"],
   ["ledger.view", "ledger", "view"],
   ["ledger.record_payment", "ledger", "record_payment"],
   ["reports.view", "reports", "view"],
@@ -57,6 +61,9 @@ async function initialize() {
   await ensureColumn(connection, "export_orders", "transporter_contact", "VARCHAR(120) NULL AFTER transporter_name");
   await ensureColumn(connection, "export_orders", "transporter_phone", "VARCHAR(60) NULL AFTER transporter_contact");
   await ensureColumn(connection, "products", "packaging_details", "JSON NULL AFTER pieces_per_unit");
+  await ensureColumn(connection, "export_orders", "bank_account_id", "BIGINT UNSIGNED NULL AFTER customs_consignee_id");
+  await ensureColumn(connection, "shipment_allocations", "shipment_container_id", "BIGINT UNSIGNED NULL AFTER shipment_id");
+  await migrateLegacyShipmentContainers(connection);
   await migrateLegacyCartonPacking(connection);
 
   for (const [key, moduleName, actionName] of permissions) {
@@ -97,6 +104,7 @@ async function initialize() {
      WHERE permission_key IN (
        'dashboard.view','orders.view','orders.create','orders.edit',
        'documents.preview','documents.print','products.view','parties.view','parties.create',
+       'bank_accounts.view','bank_accounts.create','bank_accounts.edit',
        'ledger.view','ledger.record_payment','reports.view'
      )`,
     [docsRole.id]
@@ -108,7 +116,7 @@ async function initialize() {
      SELECT ?, id FROM permissions
      WHERE permission_key IN (
        'dashboard.view','orders.view','orders.edit',
-       'documents.preview','documents.print','products.view','parties.view',
+       'documents.preview','documents.print','products.view','parties.view','bank_accounts.view',
        'ledger.view','reports.view'
      )`,
     [shippingRole.id]
@@ -119,7 +127,7 @@ async function initialize() {
     `INSERT IGNORE INTO role_permissions (role_id, permission_id)
      SELECT ?, id FROM permissions
      WHERE permission_key IN (
-       'dashboard.view','orders.view','documents.preview','products.view','parties.view',
+       'dashboard.view','orders.view','documents.preview','products.view','parties.view','bank_accounts.view',
        'ledger.view','reports.view'
      )`,
     [viewerRole.id]
@@ -166,6 +174,36 @@ async function initialize() {
     ON DUPLICATE KEY UPDATE company_name = VALUES(company_name)`
   );
 
+  await connection.execute(
+    `INSERT INTO bank_accounts (
+      account_name, beneficiary_name, bank_name, branch_name, account_number,
+      iban, swift_code, currency, correspondent_bank, correspondent_account,
+      correspondent_swift_code
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE account_name = VALUES(account_name)`,
+    [
+      "Dubai Islamic Bank - USD",
+      "Z.A FOOD INDUSTRIES",
+      "Dubai Islamic Bank Pakistan Ltd",
+      "Main Branch, Faisalabad",
+      "3587-020675-001",
+      "PK94DUIB0000000055839002",
+      "DUIBPKKA",
+      "USD",
+      "Standard Chartered Bank Ltd, UAE",
+      "358-020675-001",
+      "SCBL US 33"
+    ]
+  );
+  const [[defaultBankAccount]] = await connection.execute(
+    "SELECT id FROM bank_accounts WHERE account_name = ?",
+    ["Dubai Islamic Bank - USD"]
+  );
+  await connection.execute(
+    "UPDATE export_orders SET bank_account_id = ? WHERE bank_account_id IS NULL",
+    [defaultBankAccount.id]
+  );
+
   await connection.end();
   console.log("Database initialized.");
 }
@@ -184,6 +222,53 @@ async function ensureColumn(connection, tableName, columnName, definition) {
   );
   if (!columns.length) {
     await connection.query(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  }
+}
+
+async function migrateLegacyShipmentContainers(connection) {
+  await connection.query(
+    `INSERT INTO shipment_containers (
+      shipment_id, line_number, container_number, container_type, cbm, seal_numbers
+    )
+    SELECT s.id, 1, COALESCE(NULLIF(s.container_number, ''), CONCAT('CONTAINER-', s.id)),
+      s.container_type, s.cbm, s.seal_numbers
+    FROM shipments s
+    WHERE NOT EXISTS (
+      SELECT 1 FROM shipment_containers sc WHERE sc.shipment_id = s.id
+    )`
+  );
+  await connection.query(
+    `UPDATE shipment_allocations sa
+     JOIN (
+       SELECT shipment_id, MIN(id) AS container_id
+       FROM shipment_containers GROUP BY shipment_id
+     ) first_container ON first_container.shipment_id = sa.shipment_id
+     SET sa.shipment_container_id = first_container.container_id
+     WHERE sa.shipment_container_id IS NULL`
+  );
+  await replaceShipmentAllocationUniqueIndex(connection);
+}
+
+async function replaceShipmentAllocationUniqueIndex(connection) {
+  const [oldIndex] = await connection.execute(
+    `SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS
+     WHERE TABLE_SCHEMA=? AND TABLE_NAME='shipment_allocations'
+       AND INDEX_NAME='uq_shipment_contract_line' LIMIT 1`,
+    [env.db.database]
+  );
+  if (oldIndex.length) {
+    await connection.query("ALTER TABLE shipment_allocations DROP INDEX uq_shipment_contract_line");
+  }
+  const [newIndex] = await connection.execute(
+    `SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS
+     WHERE TABLE_SCHEMA=? AND TABLE_NAME='shipment_allocations'
+       AND INDEX_NAME='uq_shipment_contract_container' LIMIT 1`,
+    [env.db.database]
+  );
+  if (!newIndex.length) {
+    await connection.query(
+      "ALTER TABLE shipment_allocations ADD UNIQUE KEY uq_shipment_contract_container (shipment_id, export_order_item_id, shipment_container_id)"
+    );
   }
 }
 
