@@ -47,7 +47,10 @@ const shipmentSchema = z.object({
     container_index: z.coerce.number().int().min(0),
     quantity: z.coerce.number().positive()
   })).min(1)
-});
+}).refine(
+  (input) => !(input.gd_number && input.fi_number),
+  { message: "Select either a G.D. number or an FI number, not both.", path: ["gd_number"] }
+);
 
 const gatePassSchema = z.object({
   clearing_agent_id: optionalId,
@@ -314,6 +317,9 @@ shipmentsRouter.get("/:id", requirePermission("orders.view"), asyncHandler(async
       customs_value: item.is_sample ? 0 : Number(item.quantity) * Number(item.net_weight_per_carton) * Number(item.customs_price_per_kg)
     };
   });
+  const selectedSalesContractNumbers = [...new Set(
+    calculatedItems.map((item) => item.contract_number).filter(Boolean)
+  )].join(", ");
   if (isGatePassOnlyUser(req.user)) {
     const shipment = rows[0];
     return res.json({ shipment: {
@@ -352,7 +358,12 @@ shipmentsRouter.get("/:id", requirePermission("orders.view"), asyncHandler(async
       }))
     } });
   }
-  res.json({ shipment: { ...rows[0], containers, items: calculatedItems } });
+  res.json({ shipment: {
+    ...rows[0],
+    sales_contract_number: selectedSalesContractNumbers,
+    containers,
+    items: calculatedItems
+  } });
 }));
 
 shipmentsRouter.post("/", requirePermission("orders.create"), asyncHandler(async (req, res) => {
