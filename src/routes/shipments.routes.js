@@ -230,7 +230,7 @@ shipmentsRouter.get("/available-lines", requirePermission("orders.view"), asyncH
       i.quantity_unit, i.units_per_carton, i.net_weight_per_carton, i.gross_weight_per_carton,
       i.client_price_per_carton, i.customs_price_per_kg, i.is_sample,
       p.name AS product_name, o.id AS contract_id, o.invoice_number,
-      COALESCE(o.sales_contract_number, o.invoice_number) AS contract_number,
+      COALESCE(NULLIF(TRIM(o.sales_contract_number), ''), o.invoice_number) AS contract_number,
       o.contract_date, o.currency,
       COALESCE((SELECT SUM(sa.quantity) FROM shipment_allocations sa
         JOIN shipments s ON s.id = sa.shipment_id
@@ -263,7 +263,7 @@ shipmentsRouter.get("/:id", requirePermission("orders.view"), asyncHandler(async
       anp.name AS also_notify_party_name, anp.address_line_1 AS also_notify_party_address,
       anp.city AS also_notify_party_city, anp.country AS also_notify_party_country,
       ca.name AS clearing_agent_name, ca.phone AS clearing_agent_phone, ca.contact_person AS clearing_agent_contact,
-      GROUP_CONCAT(DISTINCT COALESCE(o.sales_contract_number, o.invoice_number) ORDER BY o.contract_date SEPARATOR ', ') AS sales_contract_number
+      GROUP_CONCAT(DISTINCT COALESCE(NULLIF(TRIM(o.sales_contract_number), ''), o.invoice_number) ORDER BY o.contract_date SEPARATOR ', ') AS sales_contract_number
      FROM shipments s JOIN parties c ON c.id = s.client_id
      JOIN parties cc ON cc.id = s.customs_consignee_id
      LEFT JOIN parties anp ON anp.id = s.also_notify_party_id
@@ -292,7 +292,7 @@ shipmentsRouter.get("/:id", requirePermission("orders.view"), asyncHandler(async
       p.unit_weight_grams AS product_unit_weight_grams, p.pieces_per_unit AS product_pieces_per_unit,
       p.package_type AS product_package_type, p.packaging_details AS product_packaging_details,
       p.image_url AS product_image_url, o.id AS contract_id,
-      COALESCE(o.sales_contract_number, o.invoice_number) AS contract_number
+      COALESCE(NULLIF(TRIM(o.sales_contract_number), ''), o.invoice_number) AS contract_number
      FROM shipment_allocations sa
      JOIN shipment_containers sc ON sc.id = sa.shipment_container_id
      JOIN export_order_items i ON i.id = sa.export_order_item_id

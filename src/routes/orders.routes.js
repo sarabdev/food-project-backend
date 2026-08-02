@@ -73,7 +73,8 @@ const orderColumns = [
 ];
 
 function orderValue(input, column) {
-  return input[column] ?? null;
+  const value = input[column];
+  return typeof value === "string" && !value.trim() ? null : value ?? null;
 }
 
 function sealValue(value) {
