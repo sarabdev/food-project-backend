@@ -501,6 +501,33 @@ shipmentsRouter.patch("/:id/status", requirePermission("orders.confirm"), asyncH
   }
 }));
 
+shipmentsRouter.delete("/:id", requirePermission("orders.delete"), asyncHandler(async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [[shipment]] = await connection.execute(
+      "SELECT status, shipment_number FROM shipments WHERE id=? FOR UPDATE",
+      [req.params.id]
+    );
+    if (!shipment) {
+      await connection.rollback();
+      return res.status(404).json({ message: "Shipment not found." });
+    }
+    if (["shipped", "completed"].includes(shipment.status)) {
+      await connection.rollback();
+      return res.status(409).json({ message: "Shipped or completed shipments cannot be deleted." });
+    }
+    await connection.execute("DELETE FROM shipments WHERE id=?", [req.params.id]);
+    await connection.commit();
+    res.status(204).end();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}));
+
 shipmentsRouter.post("/:id/document-audit", asyncHandler(async (req, res) => {
   const input = z.object({
     document_type: z.enum([
